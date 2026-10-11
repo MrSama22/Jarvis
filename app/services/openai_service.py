@@ -64,11 +64,11 @@ Dispositivos:
 - Mac PC (macOS): MAC FC:45:96:79:EE:7D
 
 Protocolo de Seguridad:
-- El código de autorización maestro es 1012 (respaldo de emergencia).
-- Las acciones críticas de hardware (apagar o encender las PC) requieren verificación por cámara cuando el sistema está bloqueado.
-- Si el usuario intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO, responde con action "SECURITY_DENIED" diciendo: "Acceso denegado. Por favor, acércate a la cámara para verificar tu identidad."
-- Si el usuario pide "bloquear", "bloquea el sistema", "bloquea las pc" o "bloqueo de seguridad", confirma el bloqueo con action "SECURITY_LOCK" indicando que se requerirá la cámara.
-- Si el usuario indica que ya se verificó con la cámara o proporciona el código de respaldo 1012, confirma el desbloqueo con action "SECURITY_UNLOCK".
+- La ÚNICA validación autorizada para el control de hardware es mediante la cámara (reconocimiento facial). No existen códigos, contraseñas ni autorizaciones por voz.
+- Las acciones de hardware (apagar o encender las PC) requieren obligatoriamente que el sistema haya sido validado previamente por la cámara.
+- Si el usuario intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO, responde con action "SECURITY_DENIED" diciendo exactamente: "Acceso denegado. Por favor, acércate a la cámara para verificar tu identidad."
+- Si el usuario pide desbloquear por voz o menciona códigos o contraseñas, responde con action "SECURITY_DENIED" indicando que la única validación posible es a través de la cámara.
+- Si el usuario pide "bloquear", "bloquea el sistema", "bloquea las pc" o "bloqueo de seguridad", confirma el bloqueo con action "SECURITY_LOCK" indicando que se requerirá la cámara para próximos accesos.
 
 Reglas de respuesta:
 1. Responde a CUALQUIER pregunta que te haga Jhulian: preguntas básicas, la hora, fecha, cálculos matemáticos, conceptos, datos curiosos, ciencia, dudas cotidianas o conversación casual.
@@ -150,7 +150,7 @@ class OpenAIService:
 
         context_notes = [
             f"Fecha y hora actual local de Jhulian: {fecha_completa}",
-            f"Estado de seguridad del hardware: {'BLOQUEADO (requiere cámara o código 1012 para apagar o prender)' if esta_bloqueado else 'DESPEJADO (acciones de hardware autorizadas)'}"
+            f"Estado de seguridad del hardware: {'BLOQUEADO (la única validación autorizada es acercarse a la cámara)' if esta_bloqueado else 'DESPEJADO (validado por cámara, acciones autorizadas)'}"
         ]
         if relevant_memory:
             context_notes.append(f"Memorias:\n{relevant_memory}")
@@ -181,26 +181,20 @@ class OpenAIService:
             reply = content
 
         payload = {}
-        has_valid_pin = check_pin_authorization(user_text)
         user_text_lower = user_text.lower()
-        is_lock_command = any(k in user_text_lower for k in ["bloquear", "bloquea", "bloqueo", "activar seguridad", "activa seguridad", "cerrar sesión"])
+        is_lock_command = ("desbloque" not in user_text_lower) and any(k in user_text_lower for k in ["bloquear", "bloquea", "bloqueo", "bloqueo de seguridad", "activar seguridad", "activa seguridad", "cerrar sesión"])
         intento_apagar = any(k in user_text_lower for k in ["apaga", "apagar", "apague"])
         intento_prender = any(k in user_text_lower for k in ["prende", "prender", "prenda", "enciende", "encender", "encienda", "despierta"])
         intento_hardware = intento_apagar or intento_prender or (action in CRITICAL_HARDWARE_ACTIONS)
 
         # 1. Acciones de hardware (Apagar o Prender computadoras)
         if intento_hardware or (action in CRITICAL_HARDWARE_ACTIONS):
-            if esta_bloqueado and not has_valid_pin:
+            if esta_bloqueado:
                 action = "SECURITY_DENIED"
                 reply = "Acceso denegado. Por favor, acércate a la cámara para verificar tu identidad, Jhulian."
                 payload = {"status": "denied", "reason": "camera_verification_required", "require": "camera"}
             else:
-                # Si estaba bloqueado pero vino con el PIN en la misma orden, desbloquear sesión
-                if esta_bloqueado and has_valid_pin:
-                    agent_queue.desbloquear()
-                    logger.info("[SEGURIDAD] PIN 1012 verificado inline con acción crítica. Sesión desbloqueada.")
-
-                # Determinar acción exacta si venía como NONE, SECURITY_UNLOCK o SECURITY_DENIED
+                # Sistema validado previamente por cámara (sesión activa de 6 horas)
                 if action not in CRITICAL_HARDWARE_ACTIONS:
                     if intento_apagar:
                         if "mac" in user_text_lower and ("windows" in user_text_lower or "ambas" in user_text_lower or "todo" in user_text_lower):
@@ -240,18 +234,16 @@ class OpenAIService:
             reply = "Protocolo de seguridad activado. Sistemas bloqueados, se requerirá cámara para el control de hardware."
             payload = {"status": "locked", "require": "camera"}
 
-        # 3. Comando explícito de desbloqueo o ingreso de PIN
-        elif action == "SECURITY_UNLOCK" or has_valid_pin:
-            agent_queue.desbloquear()
-            action = "SECURITY_UNLOCK"
-            reply = "Identidad confirmada. Protocolo de seguridad levantado por seis horas, bienvenido Jhulian."
-            payload = {"status": "unlocked"}
-
-        # 4. Intento de desbloqueo sin PIN o pidiendo cámara
-        elif "desbloquear" in user_text_lower or "desbloquea" in user_text_lower:
-            action = "SECURITY_DENIED"
-            reply = "Por favor acércate a la cámara o ingresa tu código de autorización para desbloquear, Jhulian."
-            payload = {"status": "denied", "reason": "camera_verification_required", "require": "camera"}
+        # 3. Intentos de desbloqueo verbal (Se deniegan: la única validación es la cámara)
+        elif "desbloquear" in user_text_lower or "desbloquea" in user_text_lower or "código" in user_text_lower or "codigo" in user_text_lower or action == "SECURITY_UNLOCK":
+            if esta_bloqueado:
+                action = "SECURITY_DENIED"
+                reply = "Acceso denegado. La única validación autorizada es mediante la cámara. Por favor acércate a ella, Jhulian."
+                payload = {"status": "denied", "reason": "camera_verification_required", "require": "camera"}
+            else:
+                action = "NONE"
+                reply = "El sistema ya se encuentra validado y operativo por cámara, Jhulian."
+                payload = {"status": "already_unlocked"}
 
         # 5. Control de música y cancelación (no requieren PIN de hardware)
         elif action == "SPOTIFY_PAUSE" or (any(k in user_text_lower for k in ["pausa", "pausar", "deten la musica", "para la musica"]) and "musica" in user_text_lower):
