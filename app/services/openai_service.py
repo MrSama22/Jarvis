@@ -64,10 +64,11 @@ Dispositivos:
 - Mac PC (macOS): MAC FC:45:96:79:EE:7D
 
 Protocolo de Seguridad:
-- El código de autorización maestro es 1012.
-- Las acciones críticas de hardware (apagar o encender las PC) requieren autorización o que el sistema esté desbloqueado.
-- Si el usuario menciona "1012", "código 1012" o "desbloquear" con su código, confirma el desbloqueo con action "SECURITY_UNLOCK".
-- Si el usuario pide "bloquear", "bloquea el sistema", "bloquea las pc" o activar seguridad, confirma el bloqueo con action "SECURITY_LOCK".
+- El código de autorización maestro es 1012 (respaldo de emergencia).
+- Las acciones críticas de hardware (apagar o encender las PC) requieren verificación por cámara cuando el sistema está bloqueado.
+- Si el usuario intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO, responde con action "SECURITY_DENIED" diciendo: "Acceso denegado. Por favor, acércate a la cámara para verificar tu identidad."
+- Si el usuario pide "bloquear", "bloquea el sistema", "bloquea las pc" o "bloqueo de seguridad", confirma el bloqueo con action "SECURITY_LOCK" indicando que se requerirá la cámara.
+- Si el usuario indica que ya se verificó con la cámara o proporciona el código de respaldo 1012, confirma el desbloqueo con action "SECURITY_UNLOCK".
 
 Reglas de respuesta:
 1. Responde a CUALQUIER pregunta que te haga Jhulian: preguntas básicas, la hora, fecha, cálculos matemáticos, conceptos, datos curiosos, ciencia, dudas cotidianas o conversación casual.
@@ -91,8 +92,8 @@ Acciones posibles para el campo "action":
 - "SPOTIFY_PLAY": Reanudar música o restaurar volumen.
 - "CANCEL": Si Jhulian dice "cancela", "cancelar", "cancel", "olvídalo", "cancela la llamada", "abortar" o "no hagas nada". Responde brevemente con "Comando cancelado, Jhulian." o similar.
 - "SECURITY_LOCK": Activar protocolo de seguridad / bloquear hardware.
-- "SECURITY_UNLOCK": Desbloquear seguridad con código 1012.
-- "SECURITY_DENIED": Si Jhulian intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO sin el código 1012. Responde solicitando el código de autorización.
+- "SECURITY_UNLOCK": Desbloquear seguridad con verificación de cámara o código 1012.
+- "SECURITY_DENIED": Si Jhulian intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO. Responde pidiendo acercarse a la cámara.
 - "NONE": Para CUALQUIER pregunta básica, informativa, cálculo, fecha/hora, o conversación general sin orden de encendido/apagado/música.
 """
 
@@ -149,7 +150,7 @@ class OpenAIService:
 
         context_notes = [
             f"Fecha y hora actual local de Jhulian: {fecha_completa}",
-            f"Estado de seguridad del hardware: {'BLOQUEADO (requiere PIN 1012 para apagar o prender)' if esta_bloqueado else 'DESPEJADO (acciones de hardware autorizadas)'}"
+            f"Estado de seguridad del hardware: {'BLOQUEADO (requiere cámara o código 1012 para apagar o prender)' if esta_bloqueado else 'DESPEJADO (acciones de hardware autorizadas)'}"
         ]
         if relevant_memory:
             context_notes.append(f"Memorias:\n{relevant_memory}")
@@ -191,8 +192,8 @@ class OpenAIService:
         if intento_hardware or (action in CRITICAL_HARDWARE_ACTIONS):
             if esta_bloqueado and not has_valid_pin:
                 action = "SECURITY_DENIED"
-                reply = "Acceso denegado. Protocolo de seguridad activo para control de hardware. Por favor confirme su código de autorización, señor."
-                payload = {"status": "denied", "reason": "security_protocol_active"}
+                reply = "Acceso denegado. Por favor, acércate a la cámara para verificar tu identidad, Jhulian."
+                payload = {"status": "denied", "reason": "camera_verification_required", "require": "camera"}
             else:
                 # Si estaba bloqueado pero vino con el PIN en la misma orden, desbloquear sesión
                 if esta_bloqueado and has_valid_pin:
@@ -236,21 +237,21 @@ class OpenAIService:
         elif action == "SECURITY_LOCK" or is_lock_command:
             agent_queue.bloquear()
             action = "SECURITY_LOCK"
-            reply = "Protocolo de seguridad activado. Control de hardware bloqueado, señor."
-            payload = {"status": "locked"}
+            reply = "Protocolo de seguridad activado. Sistemas bloqueados, se requerirá cámara para el control de hardware."
+            payload = {"status": "locked", "require": "camera"}
 
         # 3. Comando explícito de desbloqueo o ingreso de PIN
         elif action == "SECURITY_UNLOCK" or has_valid_pin:
             agent_queue.desbloquear()
             action = "SECURITY_UNLOCK"
-            reply = "Código 1012 verificado. Protocolo de seguridad levantado por seis horas, bienvenido Jhulian."
+            reply = "Identidad confirmada. Protocolo de seguridad levantado por seis horas, bienvenido Jhulian."
             payload = {"status": "unlocked"}
 
-        # 4. Intento de desbloqueo sin PIN o con PIN incorrecto
+        # 4. Intento de desbloqueo sin PIN o pidiendo cámara
         elif "desbloquear" in user_text_lower or "desbloquea" in user_text_lower:
             action = "SECURITY_DENIED"
-            reply = "Acceso denegado. Se requiere el código de autorización de cuatro dígitos para desbloquear, Jhulian."
-            payload = {"status": "denied", "reason": "pin_required"}
+            reply = "Por favor acércate a la cámara o ingresa tu código de autorización para desbloquear, Jhulian."
+            payload = {"status": "denied", "reason": "camera_verification_required", "require": "camera"}
 
         # 5. Control de música y cancelación (no requieren PIN de hardware)
         elif action == "SPOTIFY_PAUSE" or (any(k in user_text_lower for k in ["pausa", "pausar", "deten la musica", "para la musica"]) and "musica" in user_text_lower):

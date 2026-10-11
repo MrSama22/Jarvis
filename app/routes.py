@@ -125,6 +125,54 @@ async def cancel_command():
     agent_queue.add_command("SPOTIFY_PLAY", target="both")
     return {"status": "ok", "action": "CANCEL", "reply": "Comando cancelado."}
 
+@router.get("/security/status")
+async def security_status(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None)
+):
+    """Consulta el estado del protocolo de seguridad."""
+    extract_and_verify(request, x_api_key, api_key)
+    esta_bloqueado = agent_queue.verificar_seguridad()
+    return {
+        "status": "ok",
+        "locked": esta_bloqueado,
+        "require": "camera" if esta_bloqueado else "none"
+    }
+
+@router.post("/security/unlock")
+@router.get("/security/unlock")
+async def security_unlock(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None)
+):
+    """Endpoint llamado por el sistema de cámara / OpenCV / MacroDroid tras reconocimiento facial."""
+    extract_and_verify(request, x_api_key, api_key)
+    agent_queue.desbloquear()
+    logger.info("[SEGURIDAD] Desbloqueo exitoso vía cámara / protocolo facial.")
+    return {
+        "status": "unlocked",
+        "message": "Identidad confirmada. Protocolo de seguridad levantado.",
+        "expires_in_hours": 6
+    }
+
+@router.post("/security/lock")
+@router.get("/security/lock")
+async def security_lock(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None)
+):
+    """Bloquea manualmente el sistema requiriendo cámara para el próximo control de hardware."""
+    extract_and_verify(request, x_api_key, api_key)
+    agent_queue.bloquear()
+    logger.info("[SEGURIDAD] Bloqueo manual activado.")
+    return {
+        "status": "locked",
+        "message": "Protocolo de seguridad activado. Se requiere cámara."
+    }
+
 @router.post("/jarvis")
 async def jarvis_voice_endpoint(
     request: Request,
@@ -221,6 +269,8 @@ async def jarvis_voice_endpoint(
             response_headers["X-Jarvis-Target-Mac"] = payload["mac"]
         if "ip" in payload:
             response_headers["X-Jarvis-Target-Ip"] = payload["ip"]
+        if action == "SECURITY_DENIED" or payload.get("require") == "camera":
+            response_headers["X-Jarvis-Security"] = "CAMERA_REQUIRED"
 
         return FileResponse(
             path=output_audio_path,
