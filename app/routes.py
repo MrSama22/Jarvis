@@ -3,8 +3,8 @@ import uuid
 import logging
 from typing import Optional
 from pathlib import Path
-from fastapi import APIRouter, File, UploadFile, Header, Query, Request, HTTPException, status, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, Header, Query, Request, HTTPException, status, BackgroundTasks, UploadFile
+from fastapi.responses import FileResponse
 
 from app.config import (
     JARVIS_API_KEY,
@@ -35,9 +35,7 @@ def verify_token(token: Optional[str]):
     expected = (JARVIS_API_KEY or "jarvis_secret_key_12345").strip().strip('"').strip("'")
     provided = (token or "").strip().strip('"').strip("'")
 
-    # Claves válidas admitidas
     valid_keys = {expected, "jarvis_secret_key_12345"}
-    
     if provided in valid_keys:
         return True
 
@@ -64,15 +62,14 @@ async def health_check():
 async def jarvis_voice_endpoint(
     request: Request,
     background_tasks: BackgroundTasks,
-    audio: UploadFile = File(..., description="Archivo de audio grabado por MacroDroid"),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     api_key: Optional[str] = Query(None)
 ):
     """
-    Endpoint principal de voz:
-    Soporta autenticación mediante cabecera 'X-API-Key', 'Authorization: Bearer <key>' o query '?api_key=<key>'.
+    Endpoint principal de voz con soporte universal para MacroDroid:
+    Acepta audio como multipart (cualquier nombre de parámetro) o como bytes binarios directos en el cuerpo.
     """
-    # 1. Extraer token de múltiples fuentes
+    # 1. Validar seguridad
     auth_header = request.headers.get("authorization", "")
     bearer_token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
 
@@ -86,25 +83,51 @@ async def jarvis_voice_endpoint(
 
     verify_token(token_to_verify)
 
-    # 2. Guardar archivo de audio entrante
-    input_suffix = Path(audio.filename or "recording.m4a").suffix or ".m4a"
+    # 2. Extraer audio universalmente (Multipart con cualquier clave, o Binary Body)
+    content = None
+    input_suffix = ".m4a"
+    content_type = request.headers.get("content-type", "")
+
+    # Método A: Intentar leer formulario multipart/form-data
+    if "multipart/form-data" in content_type:
+        try:
+            form = await request.form()
+            for field_name, value in form.items():
+                if isinstance(value, UploadFile):
+                    content = await value.read()
+                    if value.filename:
+                        ext = Path(value.filename).suffix
+                        if ext:
+                            input_suffix = ext
+                    logger.info(f"Audio recibido en campo '{field_name}' ({len(content)} bytes)")
+                    break
+        except Exception as e:
+            logger.warning(f"Error al analizar form multipart: {e}")
+
+    # Método B: Leer cuerpo binario directo (si MacroDroid envió el archivo como cuerpo crudo)
+    if not content:
+        raw_body = await request.body()
+        if raw_body and len(raw_body) > 50:
+            content = raw_body
+            logger.info(f"Audio recibido como cuerpo binario directo ({len(content)} bytes)")
+
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No se encontró ningún archivo de audio en la petición. Asegúrate de adjuntar el archivo en MacroDroid."
+        )
+
+    # 3. Guardar archivo temporal
     temp_input_filename = f"input_{uuid.uuid4().hex[:8]}{input_suffix}"
     temp_input_path = TEMP_AUDIO_DIR / temp_input_filename
 
     try:
-        content = await audio.read()
-        if not content:
-            raise HTTPException(status_code=400, detail="El archivo de audio está vacío.")
-
         with open(temp_input_path, "wb") as f:
             f.write(content)
-        
-        logger.info(f"Audio recibido ({len(content)} bytes), guardado en {temp_input_path}")
 
-        # Programar limpieza del audio de entrada
         background_tasks.add_task(cleanup_file, temp_input_path)
 
-        # 3. Procesar audio según el proveedor activo
+        # 4. Procesar audio con OpenAI (Whisper + GPT-4o-mini) o Gemini
         if AI_PROVIDER == "openai":
             user_transcript, assistant_reply = openai_service.process_voice_message(temp_input_path)
         else:
@@ -112,17 +135,15 @@ async def jarvis_voice_endpoint(
 
         logger.info(f"Usuario: {user_transcript} | Jarvis: {assistant_reply}")
 
-        # 4. Sintetizar respuesta con Edge-TTS
+        # 5. Sintetizar respuesta con Edge-TTS
         output_audio_path = await tts_service.generate_audio(assistant_reply)
-
-        # Programar limpieza del audio de salida tras enviarse
         background_tasks.add_task(cleanup_file, output_audio_path)
 
-        # 5. Retornar archivo de audio MP3 físico
+        # 6. Retornar archivo físico MP3
         return FileResponse(
             path=output_audio_path,
             media_type="audio/mpeg",
-            filename="jarvis_response.mp3",
+            filename="respuesta_jarvis.mp3",
             headers={
                 "X-Jarvis-Transcript": user_transcript.replace("\n", " ")[:200],
                 "X-Jarvis-Reply": assistant_reply.replace("\n", " ")[:200],
