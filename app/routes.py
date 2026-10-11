@@ -1,4 +1,5 @@
 import os
+import json
 import uuid
 import logging
 from typing import Optional
@@ -66,8 +67,7 @@ async def jarvis_voice_endpoint(
     api_key: Optional[str] = Query(None)
 ):
     """
-    Endpoint principal de voz con soporte universal para MacroDroid:
-    Acepta audio como multipart (cualquier nombre de parámetro) o como bytes binarios directos en el cuerpo.
+    Endpoint principal de voz con soporte para Wake-on-LAN y acciones de hardware.
     """
     # 1. Validar seguridad
     auth_header = request.headers.get("authorization", "")
@@ -83,12 +83,11 @@ async def jarvis_voice_endpoint(
 
     verify_token(token_to_verify)
 
-    # 2. Extraer audio universalmente (Multipart con cualquier clave, o Binary Body)
+    # 2. Extraer audio universalmente
     content = None
     input_suffix = ".m4a"
     content_type = request.headers.get("content-type", "")
 
-    # Método A: Intentar leer formulario multipart/form-data
     if "multipart/form-data" in content_type:
         try:
             form = await request.form()
@@ -104,7 +103,6 @@ async def jarvis_voice_endpoint(
         except Exception as e:
             logger.warning(f"Error al analizar form multipart: {e}")
 
-    # Método B: Leer cuerpo binario directo (si MacroDroid envió el archivo como cuerpo crudo)
     if not content:
         raw_body = await request.body()
         if raw_body and len(raw_body) > 50:
@@ -114,7 +112,7 @@ async def jarvis_voice_endpoint(
     if not content:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No se encontró ningún archivo de audio en la petición. Asegúrate de adjuntar el archivo en MacroDroid."
+            detail="No se encontró ningún archivo de audio en la petición."
         )
 
     # 3. Guardar archivo temporal
@@ -127,27 +125,40 @@ async def jarvis_voice_endpoint(
 
         background_tasks.add_task(cleanup_file, temp_input_path)
 
-        # 4. Procesar audio con OpenAI (Whisper + GPT-4o-mini) o Gemini
+        # 4. Procesar audio y detectar acción de hardware
+        action = "NONE"
+        payload = {}
+
         if AI_PROVIDER == "openai":
-            user_transcript, assistant_reply = openai_service.process_voice_message(temp_input_path)
+            user_transcript, assistant_reply, action, payload = openai_service.process_voice_message(temp_input_path)
         else:
             user_transcript, assistant_reply = gemini_service.process_voice_message(temp_input_path)
 
-        logger.info(f"Usuario: {user_transcript} | Jarvis: {assistant_reply}")
+        logger.info(f"Usuario: {user_transcript} | Jarvis: {assistant_reply} | Acción: {action}")
 
         # 5. Sintetizar respuesta con Edge-TTS
         output_audio_path = await tts_service.generate_audio(assistant_reply)
         background_tasks.add_task(cleanup_file, output_audio_path)
 
-        # 6. Retornar archivo físico MP3
+        # 6. Preparar headers de control de hardware
+        response_headers = {
+            "X-Jarvis-Transcript": user_transcript.replace("\n", " ")[:200],
+            "X-Jarvis-Reply": assistant_reply.replace("\n", " ")[:200],
+            "X-Jarvis-Action": action,
+            "X-Jarvis-Payload": json.dumps(payload),
+        }
+
+        if "mac" in payload:
+            response_headers["X-Jarvis-Target-Mac"] = payload["mac"]
+        if "ip" in payload:
+            response_headers["X-Jarvis-Target-Ip"] = payload["ip"]
+
+        # 7. Retornar archivo físico MP3 con headers de control de hardware
         return FileResponse(
             path=output_audio_path,
             media_type="audio/mpeg",
             filename="respuesta_jarvis.mp3",
-            headers={
-                "X-Jarvis-Transcript": user_transcript.replace("\n", " ")[:200],
-                "X-Jarvis-Reply": assistant_reply.replace("\n", " ")[:200],
-            }
+            headers=response_headers
         )
 
     except HTTPException:
