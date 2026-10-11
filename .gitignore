@@ -1,0 +1,22 @@
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Variables de entorno secretas
+.env
+
+# Archivos de caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Datos y audios temporales
+data/temp/*
+!data/temp/.gitkeep
+data/chroma/*
+!data/chroma/.gitkeep
+
+# IDEs
+.vscode/
+.idea/
