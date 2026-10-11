@@ -61,6 +61,7 @@ Acciones posibles para el campo "action":
 - "SHUTDOWN_BOTH": Apagar ambas computadoras / todo el laboratorio.
 - "SPOTIFY_PAUSE": Pausar música o bajar volumen.
 - "SPOTIFY_PLAY": Reanudar música o restaurar volumen.
+- "CANCEL": Si Jhulian dice "cancela", "cancelar", "cancel", "olvídalo", "cancela la llamada", "abortar" o "no hagas nada". Responde brevemente con "Comando cancelado, Jhulian." o similar.
 - "SECURITY_LOCK": Activar protocolo de seguridad / bloqueo.
 - "SECURITY_UNLOCK": Desbloquear seguridad.
 - "NONE": Para CUALQUIER pregunta básica, informativa, cálculo, fecha/hora, o conversación general sin orden de encendido/apagado/música.
@@ -194,6 +195,11 @@ class OpenAIService:
         elif action == "SPOTIFY_PLAY":
             agent_queue.add_command("SPOTIFY_PLAY", target="both")
             payload = {"status": "resumed"}
+
+        elif action == "CANCEL":
+            # Reanuda la música de inmediato y no ejecuta ninguna orden de hardware
+            agent_queue.add_command("SPOTIFY_PLAY", target="both")
+            payload = {"status": "cancelled"}
 
         return reply, action, payload
 

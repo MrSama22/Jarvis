@@ -107,6 +107,13 @@ async def resume_media(
     agent_queue.add_command("SPOTIFY_PLAY", target="both")
     return {"status": "ok", "action": "SPOTIFY_PLAY", "target": "both"}
 
+@router.get("/cancel")
+@router.post("/cancel")
+async def cancel_command():
+    """Cancela cualquier operación pendiente y reanuda la música de inmediato."""
+    agent_queue.add_command("SPOTIFY_PLAY", target="both")
+    return {"status": "ok", "action": "CANCEL", "reply": "Comando cancelado."}
+
 @router.post("/jarvis")
 async def jarvis_voice_endpoint(
     request: Request,
