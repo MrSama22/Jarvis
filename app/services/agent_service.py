@@ -6,16 +6,21 @@ logger = logging.getLogger(__name__)
 
 class AgentCommandQueue:
     def __init__(self):
+        # Historial de comandos recientes
         self.commands: List[Dict[str, Any]] = []
-        self.max_queue_size = 50
+        self.max_history = 40
+        self.last_seen_timestamps: Dict[str, float] = {
+            "windows": time.time(),
+            "mac": time.time(),
+            "all": time.time()
+        }
         self.estado_seguridad = {
             "bloqueado": False,
             "ultima_verificacion": time.time(),
-            "tiempo_maximo_sesion": 6 * 3600  # 6 horas
+            "tiempo_maximo_sesion": 6 * 3600
         }
 
     def verificar_seguridad(self) -> bool:
-        """Retorna True si el sistema está bloqueado."""
         if self.estado_seguridad["bloqueado"]:
             return True
         if (time.time() - self.estado_seguridad["ultima_verificacion"]) > self.estado_seguridad["tiempo_maximo_sesion"]:
@@ -25,32 +30,45 @@ class AgentCommandQueue:
 
     def bloquear(self):
         self.estado_seguridad["bloqueado"] = True
-        logger.info("[SEGURIDAD] Protocolo de bloqueo activado.")
+        logger.info("[SEGURIDAD] Bloqueo activado.")
 
     def desbloquear(self):
         self.estado_seguridad["bloqueado"] = False
         self.estado_seguridad["ultima_verificacion"] = time.time()
-        logger.info("[SEGURIDAD] Protocolo de bloqueo levantado.")
+        logger.info("[SEGURIDAD] Bloqueo levantado.")
 
-    def add_command(self, action: str, target: str = "windows", extra: Dict[str, Any] = None):
-        """Agrega un comando a la cola para ser ejecutado por el agente local en la PC/Mac."""
+    def add_command(self, action: str, target: str = "both", extra: Dict[str, Any] = None):
+        """Agrega un comando con timestamp único para que ni Windows ni Mac se pierdan la orden."""
+        now = time.time()
         cmd = {
-            "id": int(time.time() * 1000),
+            "id": int(now * 1000),
             "action": action,
-            "target": target,
-            "timestamp": time.time(),
+            "target": target,  # "windows", "mac", o "both"
+            "timestamp": now,
             "extra": extra or {}
         }
         self.commands.append(cmd)
-        if len(self.commands) > self.max_queue_size:
+        if len(self.commands) > self.max_history:
             self.commands.pop(0)
-        logger.info(f"[COMMAND QUEUE] Nuevo comando encolado: {action} -> {target}")
+        logger.info(f"[COMMAND QUEUE] Orden registrada: {action} -> {target}")
         return cmd
 
-    def pop_commands(self) -> List[Dict[str, Any]]:
-        """Devuelve todos los comandos pendientes y vacía la cola."""
-        pending = list(self.commands)
-        self.commands.clear()
+    def get_pending_for_agent(self, agent_name: str) -> List[Dict[str, Any]]:
+        """
+        Devuelve las órdenes pendientes específicas para este agente (windows o mac),
+        evitando que un agente le borre las órdenes al otro si ambos están encendidos.
+        """
+        agent_key = agent_name.lower().strip()
+        last_seen = self.last_seen_timestamps.get(agent_key, time.time() - 10)
+        
+        pending = []
+        for cmd in self.commands:
+            target = cmd.get("target", "both")
+            if cmd["timestamp"] > last_seen:
+                if target in [agent_key, "both", "all"]:
+                    pending.append(cmd)
+
+        self.last_seen_timestamps[agent_key] = time.time()
         return pending
 
 agent_queue = AgentCommandQueue()

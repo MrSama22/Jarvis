@@ -24,7 +24,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 def cleanup_file(path: Path):
-    """Elimina archivos temporales tras la respuesta."""
     try:
         if path.exists():
             path.unlink()
@@ -33,7 +32,6 @@ def cleanup_file(path: Path):
         logger.warning(f"No se pudo eliminar {path}: {e}")
 
 def verify_token(token: Optional[str]):
-    """Verifica el token contra JARVIS_API_KEY de forma flexible."""
     expected = (JARVIS_API_KEY or "jarvis_secret_key_12345").strip().strip('"').strip("'")
     provided = (token or "").strip().strip('"').strip("'")
 
@@ -75,14 +73,16 @@ async def health_check():
 @router.get("/agent/poll")
 async def agent_poll(
     request: Request,
+    agent_id: str = Query("windows", description="Identificador del agente: windows o mac"),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     api_key: Optional[str] = Query(None)
 ):
-    """Endpoint consultado periódicamente por el agente local en la PC de Jhulian."""
+    """Endpoint consultado periódicamente tanto por Windows como por Mac de forma independiente."""
     extract_and_verify(request, x_api_key, api_key)
-    pending_commands = agent_queue.pop_commands()
+    pending_commands = agent_queue.get_pending_for_agent(agent_id)
     return {
         "status": "ok",
+        "agent": agent_id,
         "commands": pending_commands,
         "security_locked": agent_queue.estado_seguridad["bloqueado"]
     }
@@ -93,10 +93,10 @@ async def pause_media(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     api_key: Optional[str] = Query(None)
 ):
-    """Pausa la música en la PC inmediatamente."""
+    """Pausa la música en Windows y Mac inmediatamente."""
     extract_and_verify(request, x_api_key, api_key)
-    agent_queue.add_command("SPOTIFY_PAUSE", target="windows")
-    return {"status": "ok", "action": "SPOTIFY_PAUSE"}
+    agent_queue.add_command("SPOTIFY_PAUSE", target="both")
+    return {"status": "ok", "action": "SPOTIFY_PAUSE", "target": "both"}
 
 @router.get("/resume")
 async def resume_media(
@@ -104,10 +104,10 @@ async def resume_media(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     api_key: Optional[str] = Query(None)
 ):
-    """Reanuda la música en la PC inmediatamente."""
+    """Reanuda la música en Windows y Mac inmediatamente."""
     extract_and_verify(request, x_api_key, api_key)
-    agent_queue.add_command("SPOTIFY_PLAY", target="windows")
-    return {"status": "ok", "action": "SPOTIFY_PLAY"}
+    agent_queue.add_command("SPOTIFY_PLAY", target="both")
+    return {"status": "ok", "action": "SPOTIFY_PLAY", "target": "both"}
 
 @router.post("/jarvis")
 async def jarvis_voice_endpoint(
@@ -116,15 +116,11 @@ async def jarvis_voice_endpoint(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     api_key: Optional[str] = Query(None)
 ):
-    """
-    Endpoint principal de voz:
-    - Atenúa/pausa la música automáticamente mientras procesa el audio.
-    - Ejecuta intenciones de hardware y seguridad.
-    """
+    """Endpoint principal de voz con soporte universal para hardware y atenuación de música."""
     extract_and_verify(request, x_api_key, api_key)
 
-    # Atenuar música mientras procesamos para que no interfiera
-    agent_queue.add_command("SPOTIFY_PAUSE", target="windows")
+    # Pausa en ambas PCs mientras procesamos
+    agent_queue.add_command("SPOTIFY_PAUSE", target="both")
 
     content = None
     input_suffix = ".m4a"
@@ -176,7 +172,6 @@ async def jarvis_voice_endpoint(
 
         logger.info(f"Usuario: {user_transcript} | Jarvis: {assistant_reply} | Acción: {action}")
 
-        # Sintetizar audio
         output_audio_path = await tts_service.generate_audio(assistant_reply)
         background_tasks.add_task(cleanup_file, output_audio_path)
 
