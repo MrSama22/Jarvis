@@ -51,11 +51,18 @@ def ejecutar_applescript(script: str):
     except Exception as e:
         print(f"[!] Error AppleScript en Mac: {e}")
 
+IS_MUTED_BY_JARVIS = False
+
 def pausar_musica():
     """Pausa la música en el sistema operativo actual de forma instantánea."""
+    global IS_MUTED_BY_JARVIS
     if IS_WINDOWS:
-        print("[Música] Pausando en Windows (instantáneo)...")
-        toggle_audio_windows()
+        if not IS_MUTED_BY_JARVIS:
+            print("[Música] Pausando en Windows (instantáneo)...")
+            toggle_audio_windows()
+            IS_MUTED_BY_JARVIS = True
+        else:
+            print("[Música] Windows ya estaba pausado.")
 
     elif IS_MAC:
         print("[Música] Pausando música directamente en Mac (Spotify y Music)...")
@@ -64,9 +71,14 @@ def pausar_musica():
 
 def reanudar_musica():
     """Reanuda la música en el sistema operativo actual de forma instantánea."""
+    global IS_MUTED_BY_JARVIS
     if IS_WINDOWS:
-        print("[Música] Reanudando en Windows (instantáneo)...")
-        toggle_audio_windows()
+        if IS_MUTED_BY_JARVIS:
+            print("[Música] Reanudando en Windows (instantáneo)...")
+            toggle_audio_windows()
+            IS_MUTED_BY_JARVIS = False
+        else:
+            print("[Música] Windows ya estaba desmuteado.")
 
     elif IS_MAC:
         print("[Música] Reanudando música directamente en Mac (Spotify y Music)...")

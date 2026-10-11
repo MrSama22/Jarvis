@@ -35,17 +35,18 @@ DEVICES = {
 }
 
 SYSTEM_PROMPT = """
-Eres JARVIS, el asistente personal de Jhulian. Tu respuesta será leída por un sintetizador de voz (TTS).
-Tienes el control total de las computadoras de Jhulian (Windows y Mac) y de su música.
+Eres JARVIS, el asistente personal inteligente de Jhulian. Tu respuesta será leída en voz alta por un sintetizador de voz (TTS).
+Posees amplio conocimiento, capacidad de cálculo y control total sobre las computadoras de Jhulian (Windows y Mac) y su música.
 
 Dispositivos:
 - PC Principal (Windows): MAC D8-43-AE-F8-81-6E, IP 192.168.1.8
 - Mac PC (macOS): MAC FC:45:96:79:EE:7D
 
 Reglas de respuesta:
-1. Responde de forma concisa, inteligente, natural y directa (máximo 1 a 2 oraciones).
-2. No uses asteriscos, negritas, listas ni símbolos de Markdown.
-3. SIEMPRE debes retornar un JSON válido con esta estructura:
+1. Responde a CUALQUIER pregunta que te haga Jhulian: preguntas básicas, la hora, fecha, cálculos matemáticos, conceptos, datos curiosos, ciencia, dudas cotidianas o conversación casual.
+2. Responde siempre de forma concisa, inteligente, natural, fluida y directa (máximo 1 a 2 oraciones, ideal para voz).
+3. No uses asteriscos, negritas, listas ni símbolos de Markdown.
+4. SIEMPRE debes retornar un JSON válido con esta estructura:
 {
   "action": "ACCION_DETECTADA",
   "reply": "Tu respuesta hablada para Jhulian"
@@ -62,7 +63,7 @@ Acciones posibles para el campo "action":
 - "SPOTIFY_PLAY": Reanudar música o restaurar volumen.
 - "SECURITY_LOCK": Activar protocolo de seguridad / bloqueo.
 - "SECURITY_UNLOCK": Desbloquear seguridad.
-- "NONE": Conversación general sin orden de hardware.
+- "NONE": Para CUALQUIER pregunta básica, informativa, cálculo, fecha/hora, o conversación general sin orden de encendido/apagado/música.
 """
 
 class OpenAIService:
@@ -100,6 +101,15 @@ class OpenAIService:
 
         esta_bloqueado = agent_queue.verificar_seguridad()
 
+        # Obtener fecha y hora local precisa de Jhulian (UTC-5)
+        import datetime
+        tz_local = datetime.timezone(datetime.timedelta(hours=-5))
+        ahora = datetime.datetime.now(tz_local)
+        dias_sem = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo']
+        meses_nom = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+        hora_str = ahora.strftime('%I:%M %p').lstrip('0')
+        fecha_completa = f"{dias_sem[ahora.weekday()]}, {ahora.day} de {meses_nom[ahora.month-1]} de {ahora.year}, hora actual {hora_str}"
+
         relevant_memory = memory_service.search_context(user_text, n_results=2)
         recent_history = memory_service.get_recent_history_context()
 
@@ -107,7 +117,10 @@ class OpenAIService:
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
 
-        context_notes = [f"Estado de seguridad actual: {'BLOQUEADO' if esta_bloqueado else 'DESPEJADO'}"]
+        context_notes = [
+            f"Fecha y hora actual local de Jhulian: {fecha_completa}",
+            f"Estado de seguridad actual: {'BLOQUEADO' if esta_bloqueado else 'DESPEJADO'}"
+        ]
         if relevant_memory:
             context_notes.append(f"Memorias:\n{relevant_memory}")
         if recent_history:
