@@ -1,8 +1,9 @@
 import os
 import uuid
 import logging
+from typing import Optional
 from pathlib import Path
-from fastapi import APIRouter, File, UploadFile, Header, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, File, UploadFile, Header, Query, Request, HTTPException, status, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import (
@@ -29,15 +30,19 @@ def cleanup_file(path: Path):
     except Exception as e:
         logger.warning(f"No se pudo eliminar el archivo temporal {path}: {e}")
 
-def verify_api_key(x_api_key: str = Header(None)):
-    """Verifica la autenticación mediante la cabecera X-API-Key."""
-    if not JARVIS_API_KEY:
+def verify_token(token: Optional[str]):
+    """Verifica el token contra JARVIS_API_KEY de forma flexible (ignora comillas y espacios)."""
+    if not JARVIS_API_KEY or not JARVIS_API_KEY.strip():
         return True
-    if not x_api_key or x_api_key != JARVIS_API_KEY:
-        logger.warning(f"Intento de acceso con API Key inválida o ausente: {x_api_key}")
+
+    expected = JARVIS_API_KEY.strip().strip('"').strip("'")
+    provided = (token or "").strip().strip('"').strip("'")
+
+    if not provided or provided != expected:
+        logger.warning(f"Acceso no autorizado. Recibido: '{provided}', Esperado: '{expected}'")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Acceso no autorizado: X-API-Key inválida o ausente."
+            detail="Acceso no autorizado: API Key inválida o ausente."
         )
     return True
 
@@ -56,20 +61,29 @@ async def health_check():
 
 @router.post("/jarvis")
 async def jarvis_voice_endpoint(
+    request: Request,
     background_tasks: BackgroundTasks,
     audio: UploadFile = File(..., description="Archivo de audio grabado por MacroDroid"),
-    x_api_key: str = Header(None)
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None)
 ):
     """
     Endpoint principal de voz:
-    1. Valida autenticación por X-API-Key.
-    2. Recibe el archivo de audio grabado por MacroDroid.
-    3. Procesa con el proveedor de IA activo (OpenAI Whisper + GPT-4o-mini por defecto, o Gemini).
-    4. Genera voz de respuesta ultra-realista con Edge-TTS (100% gratuita).
-    5. Retorna el archivo MP3 físico para reproducción inmediata en el celular.
+    Soporta autenticación mediante cabecera 'X-API-Key', 'Authorization: Bearer <key>' o query '?api_key=<key>'.
     """
-    # 1. Validar seguridad
-    verify_api_key(x_api_key)
+    # 1. Extraer token de múltiples fuentes (headers case-insensitive o query)
+    auth_header = request.headers.get("authorization", "")
+    bearer_token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+
+    token_to_verify = (
+        x_api_key
+        or request.headers.get("x-api-key")
+        or request.headers.get("X-API-Key")
+        or bearer_token
+        or api_key
+    )
+
+    verify_token(token_to_verify)
 
     # 2. Guardar archivo de audio entrante
     input_suffix = Path(audio.filename or "recording.m4a").suffix or ".m4a"
