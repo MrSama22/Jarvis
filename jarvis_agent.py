@@ -27,7 +27,7 @@ API_KEY = os.getenv("JARVIS_API_KEY", "jarvis_secret_key_12345")
 POLL_INTERVAL = 1.5
 
 # Destino SSH de la Mac (solo utilizado si Windows hace de puente)
-MAC_SSH_DESTINO = os.getenv("MAC_SSH_DESTINO", "Jhulian@192.168.1.255")
+MAC_SSH_DESTINO = os.getenv("MAC_SSH_DESTINO", "jhulian@192.168.1.12")
 
 def ejecutar_comando_local(comando: str):
     try:
