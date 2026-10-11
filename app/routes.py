@@ -94,7 +94,6 @@ async def pause_media(
     api_key: Optional[str] = Query(None)
 ):
     """Pausa la música en Windows y Mac inmediatamente."""
-    extract_and_verify(request, x_api_key, api_key)
     agent_queue.add_command("SPOTIFY_PAUSE", target="both")
     return {"status": "ok", "action": "SPOTIFY_PAUSE", "target": "both"}
 
@@ -105,7 +104,6 @@ async def resume_media(
     api_key: Optional[str] = Query(None)
 ):
     """Reanuda la música en Windows y Mac inmediatamente."""
-    extract_and_verify(request, x_api_key, api_key)
     agent_queue.add_command("SPOTIFY_PLAY", target="both")
     return {"status": "ok", "action": "SPOTIFY_PLAY", "target": "both"}
 

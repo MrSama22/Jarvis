@@ -40,6 +40,12 @@ class AgentCommandQueue:
     def add_command(self, action: str, target: str = "both", extra: Dict[str, Any] = None):
         """Agrega un comando con timestamp único para que ni Windows ni Mac se pierdan la orden."""
         now = time.time()
+        # Evitar colisiones entre pausa y reproducción inmediata
+        if action == "SPOTIFY_PLAY":
+            self.commands = [c for c in self.commands if c.get("action") != "SPOTIFY_PAUSE"]
+        elif action == "SPOTIFY_PAUSE":
+            self.commands = [c for c in self.commands if c.get("action") != "SPOTIFY_PLAY"]
+
         cmd = {
             "id": int(now * 1000),
             "action": action,

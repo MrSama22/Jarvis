@@ -24,16 +24,25 @@ AGENT_ID = "mac" if IS_MAC else "windows"
 # Configuración del Backend en la Nube
 SERVER_URL = os.getenv("RENDER_URL", "https://jarvis-fbff.onrender.com")
 API_KEY = os.getenv("JARVIS_API_KEY", "jarvis_secret_key_12345")
-POLL_INTERVAL = 1.5
-
-# Destino SSH de la Mac (solo utilizado si Windows hace de puente)
-MAC_SSH_DESTINO = os.getenv("MAC_SSH_DESTINO", "jhulian@192.168.1.12")
+POLL_INTERVAL = 0.8
 
 def ejecutar_comando_local(comando: str):
     try:
         subprocess.run(comando, shell=True, check=True)
     except Exception as e:
         print(f"[!] Error ejecutando comando: {e}")
+
+def toggle_audio_windows():
+    """Envía la pulsación de tecla de Mute/Play instantáneamente en 0ms sin lag."""
+    try:
+        import ctypes
+        VK_VOLUME_MUTE = 0xAD
+        KEYEVENTF_KEYUP = 0x0002
+        ctypes.windll.user32.keybd_event(VK_VOLUME_MUTE, 0, 0, 0)
+        ctypes.windll.user32.keybd_event(VK_VOLUME_MUTE, 0, KEYEVENTF_KEYUP, 0)
+    except Exception as e:
+        print(f"[!] Error con ctypes: {e}")
+        ejecutar_comando_local('schtasks /Run /TN "PausarSpotify"')
 
 def ejecutar_applescript(script: str):
     """Ejecuta un AppleScript directamente en macOS."""
@@ -43,19 +52,10 @@ def ejecutar_applescript(script: str):
         print(f"[!] Error AppleScript en Mac: {e}")
 
 def pausar_musica():
-    """Pausa la música en el sistema operativo actual."""
+    """Pausa la música en el sistema operativo actual de forma instantánea."""
     if IS_WINDOWS:
-        print("[Música] Pausando Spotify en Windows...")
-        ejecutar_comando_local('schtasks /Run /TN "PausarSpotify"')
-        # Si la Mac está en la red, intentar pausar también vía SSH
-        try:
-            subprocess.run(
-                ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=2", MAC_SSH_DESTINO,
-                 "osascript -e 'if application \"Spotify\" is running then tell application \"Spotify\" to pause'"],
-                capture_output=True, timeout=3
-            )
-        except Exception:
-            pass
+        print("[Música] Pausando en Windows (instantáneo)...")
+        toggle_audio_windows()
 
     elif IS_MAC:
         print("[Música] Pausando música directamente en Mac (Spotify y Music)...")
@@ -63,18 +63,10 @@ def pausar_musica():
         ejecutar_applescript('if application "Music" is running then tell application "Music" to pause')
 
 def reanudar_musica():
-    """Reanuda la música en el sistema operativo actual."""
+    """Reanuda la música en el sistema operativo actual de forma instantánea."""
     if IS_WINDOWS:
-        print("[Música] Reanudando Spotify en Windows...")
-        ejecutar_comando_local('schtasks /Run /TN "ReproducirSpotify"')
-        try:
-            subprocess.run(
-                ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=2", MAC_SSH_DESTINO,
-                 "osascript -e 'if application \"Spotify\" is running then tell application \"Spotify\" to play'"],
-                capture_output=True, timeout=3
-            )
-        except Exception:
-            pass
+        print("[Música] Reanudando en Windows (instantáneo)...")
+        toggle_audio_windows()
 
     elif IS_MAC:
         print("[Música] Reanudando música directamente en Mac (Spotify y Music)...")
