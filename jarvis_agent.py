@@ -58,8 +58,9 @@ def pausar_musica():
             pass
 
     elif IS_MAC:
-        print("[Música] Pausando Spotify directamente en Mac...")
+        print("[Música] Pausando música directamente en Mac (Spotify y Music)...")
         ejecutar_applescript('if application "Spotify" is running then tell application "Spotify" to pause')
+        ejecutar_applescript('if application "Music" is running then tell application "Music" to pause')
 
 def reanudar_musica():
     """Reanuda la música en el sistema operativo actual."""
@@ -76,8 +77,9 @@ def reanudar_musica():
             pass
 
     elif IS_MAC:
-        print("[Música] Reanudando Spotify directamente en Mac...")
+        print("[Música] Reanudando música directamente en Mac (Spotify y Music)...")
         ejecutar_applescript('if application "Spotify" is running then tell application "Spotify" to play')
+        ejecutar_applescript('if application "Music" is running then tell application "Music" to play')
 
 def apagar_sistema(target: str):
     """Apaga el sistema correspondiente."""

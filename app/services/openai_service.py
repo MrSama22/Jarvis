@@ -175,11 +175,11 @@ class OpenAIService:
             payload = {"target": "both"}
 
         elif action == "SPOTIFY_PAUSE":
-            agent_queue.add_command("SPOTIFY_PAUSE", target="windows")
+            agent_queue.add_command("SPOTIFY_PAUSE", target="both")
             payload = {"status": "paused"}
 
         elif action == "SPOTIFY_PLAY":
-            agent_queue.add_command("SPOTIFY_PLAY", target="windows")
+            agent_queue.add_command("SPOTIFY_PLAY", target="both")
             payload = {"status": "resumed"}
 
         return reply, action, payload
