@@ -295,4 +295,47 @@ class OpenAIService:
         logger.info(f"[JARVIS BRAIN] Usuario: '{transcript}' | Acción: '{action}' | Respuesta: '{reply}'")
         return transcript, reply, action, payload
 
+    def verify_face_image(self, image_bytes: bytes) -> Tuple[bool, str]:
+        """Analiza la foto capturada por la cámara para verificar presencia de Jhulian / rostro humano."""
+        if not self.client:
+            raise ValueError("OPENAI_API_KEY no configurada.")
+        import base64
+        b64_img = base64.b64encode(image_bytes).decode("utf-8")
+        prompt = (
+            "Eres el módulo de seguridad biométrica de JARVIS. Analiza esta imagen capturada por la cámara.\n"
+            "Verifica si aparece una persona real frente a la cámara (el usuario Jhulian) de forma clara y atenta.\n"
+            "Responde únicamente en formato JSON con esta estructura:\n"
+            '{"verified": true/false, "reason": "breve explicación en 1 oración"}'
+        )
+        try:
+            response = self.client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{b64_img}",
+                                    "detail": "low"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=100,
+                temperature=0.2
+            )
+            content = response.choices[0].message.content.strip()
+            parsed = json.loads(content)
+            is_verified = bool(parsed.get("verified", False))
+            reason = parsed.get("reason", "Verificación completada.")
+            return is_verified, reason
+        except Exception as e:
+            logger.error(f"Error analizando imagen con OpenAI Vision: {e}")
+            return False, f"Error en análisis de imagen: {str(e)}"
+
 openai_service = OpenAIService()

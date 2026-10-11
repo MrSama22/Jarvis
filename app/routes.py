@@ -173,6 +173,68 @@ async def security_lock(
         "message": "Protocolo de seguridad activado. Se requiere cámara."
     }
 
+@router.post("/security/verify-face")
+async def security_verify_face(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None)
+):
+    """Recibe una captura de cámara (multipart, raw o JSON base64) y valida la identidad biométrica."""
+    extract_and_verify(request, x_api_key, api_key)
+    image_bytes = None
+    content_type = request.headers.get("content-type", "")
+
+    if "multipart/form-data" in content_type:
+        try:
+            form = await request.form()
+            for _, val in form.items():
+                if isinstance(val, UploadFile):
+                    image_bytes = await val.read()
+                    break
+        except Exception as e:
+            logger.warning(f"Error parseando multipart en verify-face: {e}")
+
+    elif "application/json" in content_type:
+        try:
+            body_json = await request.json()
+            b64_str = body_json.get("image") or body_json.get("photo") or ""
+            if b64_str:
+                import base64
+                if "," in b64_str:
+                    b64_str = b64_str.split(",", 1)[1]
+                image_bytes = base64.b64decode(b64_str)
+        except Exception as e:
+            logger.warning(f"Error parseando JSON base64 en verify-face: {e}")
+
+    if not image_bytes:
+        raw_body = await request.body()
+        if raw_body and len(raw_body) > 100:
+            image_bytes = raw_body
+
+    if not image_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No se encontró ninguna imagen en la petición."
+        )
+
+    verified, message = openai_service.verify_face_image(image_bytes)
+    if verified:
+        agent_queue.desbloquear()
+        logger.info("[SEGURIDAD] Desbloqueo exitoso por reconocimiento facial con visión IA.")
+        return {
+            "status": "unlocked",
+            "verified": True,
+            "message": message or "Identidad confirmada. Protocolo de seguridad levantado.",
+            "expires_in_hours": 6
+        }
+    else:
+        logger.warning(f"[SEGURIDAD] Verificación facial rechazada: {message}")
+        return {
+            "status": "denied",
+            "verified": False,
+            "message": message or "Rostro no reconocido. Acceso denegado."
+        }
+
 @router.post("/jarvis")
 async def jarvis_voice_endpoint(
     request: Request,
