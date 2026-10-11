@@ -44,9 +44,10 @@ Dispositivos:
 
 Reglas de respuesta:
 1. Responde a CUALQUIER pregunta que te haga Jhulian: preguntas básicas, la hora, fecha, cálculos matemáticos, conceptos, datos curiosos, ciencia, dudas cotidianas o conversación casual.
-2. Responde siempre de forma concisa, inteligente, natural, fluida y directa (máximo 1 a 2 oraciones, ideal para voz).
-3. No uses asteriscos, negritas, listas ni símbolos de Markdown.
-4. SIEMPRE debes retornar un JSON válido con esta estructura:
+2. Si el mensaje es ininteligible, puro ruido o no logras entenderlo con claridad, responde exactamente: "No entendí tu comando." con action: "NONE".
+3. Responde siempre de forma concisa, inteligente, natural, fluida y directa (máximo 1 a 2 oraciones, ideal para voz).
+4. No uses asteriscos, negritas, listas ni símbolos de Markdown.
+5. SIEMPRE debes retornar un JSON válido con esta estructura:
 {
   "action": "ACCION_DETECTADA",
   "reply": "Tu respuesta hablada para Jhulian"
@@ -205,8 +206,20 @@ class OpenAIService:
 
     def process_voice_message(self, audio_path: Path) -> Tuple[str, str, str, Dict[str, Any]]:
         transcript = self.transcribe_audio(audio_path)
-        if not transcript:
-            return "Silencio", "No logré escucharte con claridad, Jhulian. ¿Podrías repetirlo?", "NONE", {}
+        transcript_clean = transcript.strip().strip(".?!¿¡ ").lower()
+
+        # Alucinaciones comunes de Whisper cuando hay silencio o ruido de fondo
+        alucinaciones_silencio = {
+            "", "silencio", "you", "gracias",
+            "subtítulos por la comunidad de amara.org",
+            "suscríbete al canal", "..."
+        }
+        if not transcript_clean or transcript_clean in alucinaciones_silencio:
+            logger.info(f"[JARVIS BRAIN] Audio vacío o ininteligible: '{transcript}'")
+            reply = "No entendí tu comando."
+            action = "NONE"
+            payload = {"status": "unrecognized"}
+            return "Vacío", reply, action, payload
 
         reply, action, payload = self.generate_response_and_action(transcript)
         memory_service.save_turn(user_text=transcript, assistant_text=reply)

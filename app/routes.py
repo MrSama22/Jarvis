@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import asyncio
 import logging
 from typing import Optional
 from pathlib import Path
@@ -22,6 +23,11 @@ from app.services.agent_service import agent_queue
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+async def auto_resume_after_speech(delay_seconds: float):
+    await asyncio.sleep(delay_seconds)
+    logger.info(f"[AUTO-RESUME] Reanudando música en Windows y Mac tras {delay_seconds:.1f}s")
+    agent_queue.add_command("SPOTIFY_PLAY", target="both")
 
 def cleanup_file(path: Path):
     try:
@@ -179,6 +185,12 @@ async def jarvis_voice_endpoint(
 
         output_audio_path = await tts_service.generate_audio(assistant_reply)
         background_tasks.add_task(cleanup_file, output_audio_path)
+
+        # Si NO es una orden de apagar, pausar música o bloquear, reanudar la música automáticamente en ambas PCs tras la locución
+        if action not in ["SPOTIFY_PAUSE", "SHUTDOWN_WINDOWS", "SHUTDOWN_MAC", "SHUTDOWN_BOTH", "SECURITY_LOCK"]:
+            words_count = len(assistant_reply.split())
+            speech_duration = max(1.8, (words_count / 2.6) + 1.0)
+            background_tasks.add_task(auto_resume_after_speech, speech_duration)
 
         response_headers = {
             "X-Jarvis-Transcript": user_transcript.replace("\n", " ")[:200],
