@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 from pathlib import Path
 from fastapi import APIRouter, Header, Query, Request, HTTPException, status, BackgroundTasks, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import (
     JARVIS_API_KEY,
@@ -18,18 +18,19 @@ from app.services.tts_service import tts_service
 from app.services.chroma_service import memory_service
 from app.services.openai_service import openai_service
 from app.services.gemini_service import gemini_service
+from app.services.agent_service import agent_queue
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 def cleanup_file(path: Path):
-    """Elimina archivos temporales de audio tras completar la respuesta."""
+    """Elimina archivos temporales tras la respuesta."""
     try:
         if path.exists():
             path.unlink()
             logger.debug(f"Archivo temporal eliminado: {path}")
     except Exception as e:
-        logger.warning(f"No se pudo eliminar el archivo temporal {path}: {e}")
+        logger.warning(f"No se pudo eliminar {path}: {e}")
 
 def verify_token(token: Optional[str]):
     """Verifica el token contra JARVIS_API_KEY de forma flexible."""
@@ -46,9 +47,20 @@ def verify_token(token: Optional[str]):
         detail="Acceso no autorizado: API Key inválida o ausente."
     )
 
+def extract_and_verify(request: Request, x_api_key: Optional[str] = None, api_key: Optional[str] = None):
+    auth_header = request.headers.get("authorization", "")
+    bearer_token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+    token_to_verify = (
+        x_api_key
+        or request.headers.get("x-api-key")
+        or request.headers.get("X-API-Key")
+        or bearer_token
+        or api_key
+    )
+    verify_token(token_to_verify)
+
 @router.get("/health")
 async def health_check():
-    """Endpoint de estado del servidor."""
     active_model = OPENAI_MODEL if AI_PROVIDER == "openai" else GEMINI_MODEL
     return {
         "status": "online",
@@ -56,8 +68,46 @@ async def health_check():
         "ai_provider": AI_PROVIDER,
         "active_model": active_model,
         "chroma_status": "ready" if memory_service.collection is not None else "in-memory-fallback",
-        "voice": tts_service.voice
+        "voice": tts_service.voice,
+        "security_locked": agent_queue.estado_seguridad["bloqueado"]
     }
+
+@router.get("/agent/poll")
+async def agent_poll(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None)
+):
+    """Endpoint consultado periódicamente por el agente local en la PC de Jhulian."""
+    extract_and_verify(request, x_api_key, api_key)
+    pending_commands = agent_queue.pop_commands()
+    return {
+        "status": "ok",
+        "commands": pending_commands,
+        "security_locked": agent_queue.estado_seguridad["bloqueado"]
+    }
+
+@router.get("/pause")
+async def pause_media(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None)
+):
+    """Pausa la música en la PC inmediatamente."""
+    extract_and_verify(request, x_api_key, api_key)
+    agent_queue.add_command("SPOTIFY_PAUSE", target="windows")
+    return {"status": "ok", "action": "SPOTIFY_PAUSE"}
+
+@router.get("/resume")
+async def resume_media(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    api_key: Optional[str] = Query(None)
+):
+    """Reanuda la música en la PC inmediatamente."""
+    extract_and_verify(request, x_api_key, api_key)
+    agent_queue.add_command("SPOTIFY_PLAY", target="windows")
+    return {"status": "ok", "action": "SPOTIFY_PLAY"}
 
 @router.post("/jarvis")
 async def jarvis_voice_endpoint(
@@ -67,23 +117,15 @@ async def jarvis_voice_endpoint(
     api_key: Optional[str] = Query(None)
 ):
     """
-    Endpoint principal de voz con soporte para Wake-on-LAN y acciones de hardware.
+    Endpoint principal de voz:
+    - Atenúa/pausa la música automáticamente mientras procesa el audio.
+    - Ejecuta intenciones de hardware y seguridad.
     """
-    # 1. Validar seguridad
-    auth_header = request.headers.get("authorization", "")
-    bearer_token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else None
+    extract_and_verify(request, x_api_key, api_key)
 
-    token_to_verify = (
-        x_api_key
-        or request.headers.get("x-api-key")
-        or request.headers.get("X-API-Key")
-        or bearer_token
-        or api_key
-    )
+    # Atenuar música mientras procesamos para que no interfiera
+    agent_queue.add_command("SPOTIFY_PAUSE", target="windows")
 
-    verify_token(token_to_verify)
-
-    # 2. Extraer audio universalmente
     content = None
     input_suffix = ".m4a"
     content_type = request.headers.get("content-type", "")
@@ -101,13 +143,13 @@ async def jarvis_voice_endpoint(
                     logger.info(f"Audio recibido en campo '{field_name}' ({len(content)} bytes)")
                     break
         except Exception as e:
-            logger.warning(f"Error al analizar form multipart: {e}")
+            logger.warning(f"Error parseando multipart: {e}")
 
     if not content:
         raw_body = await request.body()
         if raw_body and len(raw_body) > 50:
             content = raw_body
-            logger.info(f"Audio recibido como cuerpo binario directo ({len(content)} bytes)")
+            logger.info(f"Audio recibido como binario directo ({len(content)} bytes)")
 
     if not content:
         raise HTTPException(
@@ -115,7 +157,6 @@ async def jarvis_voice_endpoint(
             detail="No se encontró ningún archivo de audio en la petición."
         )
 
-    # 3. Guardar archivo temporal
     temp_input_filename = f"input_{uuid.uuid4().hex[:8]}{input_suffix}"
     temp_input_path = TEMP_AUDIO_DIR / temp_input_filename
 
@@ -125,7 +166,6 @@ async def jarvis_voice_endpoint(
 
         background_tasks.add_task(cleanup_file, temp_input_path)
 
-        # 4. Procesar audio y detectar acción de hardware
         action = "NONE"
         payload = {}
 
@@ -136,11 +176,10 @@ async def jarvis_voice_endpoint(
 
         logger.info(f"Usuario: {user_transcript} | Jarvis: {assistant_reply} | Acción: {action}")
 
-        # 5. Sintetizar respuesta con Edge-TTS
+        # Sintetizar audio
         output_audio_path = await tts_service.generate_audio(assistant_reply)
         background_tasks.add_task(cleanup_file, output_audio_path)
 
-        # 6. Preparar headers de control de hardware
         response_headers = {
             "X-Jarvis-Transcript": user_transcript.replace("\n", " ")[:200],
             "X-Jarvis-Reply": assistant_reply.replace("\n", " ")[:200],
@@ -153,7 +192,6 @@ async def jarvis_voice_endpoint(
         if "ip" in payload:
             response_headers["X-Jarvis-Target-Ip"] = payload["ip"]
 
-        # 7. Retornar archivo físico MP3 con headers de control de hardware
         return FileResponse(
             path=output_audio_path,
             media_type="audio/mpeg",

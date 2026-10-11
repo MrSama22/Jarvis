@@ -1,6 +1,5 @@
 import os
 import json
-import time
 import logging
 from pathlib import Path
 from typing import Tuple, Dict, Any
@@ -14,50 +13,32 @@ from app.config import (
     MAX_RESPONSE_TOKENS
 )
 from app.services.chroma_service import memory_service
+from app.services.agent_service import agent_queue
 
 logger = logging.getLogger(__name__)
 
-# Configuración de Dispositivos de Jhulian
 DEVICES = {
     "WINDOWS": {
         "name": "PC Principal",
         "mac": "D8-43-AE-F8-81-6E",
         "ip": "192.168.1.8",
         "broadcast": "192.168.1.255",
-        "port": 9,
-        "ssh": "Jhulian@192.168.1.8"
+        "port": 9
     },
     "MAC": {
         "name": "Mac PC",
         "mac": "FC:45:96:79:EE:7D",
         "ip": "192.168.1.255",
         "broadcast": "192.168.1.255",
-        "port": 9,
-        "ssh": "Jhulian@192.168.1.255"
+        "port": 9
     }
 }
 
-# Estado del Protocolo de Seguridad (de tu proyecto previo)
-TIEMPO_BLOQUEO_SEGUNDOS = 6 * 3600  # 6 horas
-estado_seguridad = {
-    "bloqueado": False,
-    "ultima_verificacion": time.time()
-}
-
-def verificar_estado_seguridad() -> bool:
-    """Retorna True si el sistema está bloqueado por tiempo o manualmente."""
-    if estado_seguridad["bloqueado"]:
-        return True
-    if (time.time() - estado_seguridad["ultima_verificacion"]) > TIEMPO_BLOQUEO_SEGUNDOS:
-        estado_seguridad["bloqueado"] = True
-        return True
-    return False
-
 SYSTEM_PROMPT = """
 Eres JARVIS, el asistente personal de Jhulian. Tu respuesta será leída por un sintetizador de voz (TTS).
-Tienes la capacidad de controlar las computadoras de Jhulian y ejecutar acciones de hardware.
+Tienes el control total de las computadoras de Jhulian (Windows y Mac) y de su música.
 
-Dispositivos registrados:
+Dispositivos:
 - PC Principal (Windows): MAC D8-43-AE-F8-81-6E, IP 192.168.1.8
 - Mac PC (macOS): MAC FC:45:96:79:EE:7D
 
@@ -76,12 +57,12 @@ Acciones posibles para el campo "action":
 - "WOL_BOTH": Encender ambas computadoras / las dos.
 - "SHUTDOWN_WINDOWS": Apagar la PC principal (Windows).
 - "SHUTDOWN_MAC": Apagar la Mac.
-- "SHUTDOWN_BOTH": Apagar ambas computadoras.
+- "SHUTDOWN_BOTH": Apagar ambas computadoras / todo el laboratorio.
 - "SPOTIFY_PAUSE": Pausar música o bajar volumen.
 - "SPOTIFY_PLAY": Reanudar música o restaurar volumen.
-- "SECURITY_LOCK": Activar bloqueo de seguridad.
+- "SECURITY_LOCK": Activar protocolo de seguridad / bloqueo.
 - "SECURITY_UNLOCK": Desbloquear seguridad.
-- "NONE": Conversación normal / preguntas generales sin orden de hardware.
+- "NONE": Conversación general sin orden de hardware.
 """
 
 class OpenAIService:
@@ -113,15 +94,11 @@ class OpenAIService:
         return getattr(transcript_response, "text", "").strip()
 
     def generate_response_and_action(self, user_text: str) -> Tuple[str, str, Dict[str, Any]]:
-        """
-        Determina la respuesta de voz y la acción de hardware (WoL, Apagado, Spotify, Seguridad).
-        Retorna: (respuesta_hablada, nombre_accion, payload_accion)
-        """
+        """Determina la respuesta y ejecuta las acciones correspondientes."""
         if not self.client:
             raise ValueError("OPENAI_API_KEY no configurada.")
 
-        # Manejo de protocolo de seguridad previo
-        esta_bloqueado = verificar_estado_seguridad()
+        esta_bloqueado = agent_queue.verificar_seguridad()
 
         relevant_memory = memory_service.search_context(user_text, n_results=2)
         recent_history = memory_service.get_recent_history_context()
@@ -130,7 +107,7 @@ class OpenAIService:
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
 
-        context_notes = [f"Estado de seguridad: {'BLOQUEADO' if esta_bloqueado else 'DESPEJADO'}"]
+        context_notes = [f"Estado de seguridad actual: {'BLOQUEADO' if esta_bloqueado else 'DESPEJADO'}"]
         if relevant_memory:
             context_notes.append(f"Memorias:\n{relevant_memory}")
         if recent_history:
@@ -161,19 +138,18 @@ class OpenAIService:
 
         payload = {}
 
-        # Validaciones de Seguridad
+        # Validación del protocolo de seguridad
         if action == "SECURITY_LOCK":
-            estado_seguridad["bloqueado"] = True
+            agent_queue.bloquear()
             reply = "Protocolo de seguridad activado. Sistemas bloqueados hasta su validación."
             payload = {"status": "locked"}
 
         elif action == "SECURITY_UNLOCK":
-            estado_seguridad["bloqueado"] = False
-            estado_seguridad["ultima_verificacion"] = time.time()
+            agent_queue.desbloquear()
             reply = "Identidad confirmada. Protocolo de seguridad levantado, bienvenido Jhulian."
             payload = {"status": "unlocked"}
 
-        elif esta_bloqueado and action in ["SHUTDOWN_WINDOWS", "SHUTDOWN_MAC", "SHUTDOWN_BOTH"]:
+        elif esta_bloqueado and ("SHUTDOWN" in action or "SPOTIFY" in action):
             action = "SECURITY_DENIED"
             reply = "Acceso denegado, Jhulian. El protocolo de seguridad está activo."
             payload = {"status": "denied"}
@@ -184,15 +160,31 @@ class OpenAIService:
             payload = DEVICES["MAC"]
         elif action == "WOL_BOTH":
             payload = {"devices": [DEVICES["WINDOWS"], DEVICES["MAC"]]}
-        elif action in ["SHUTDOWN_WINDOWS", "SHUTDOWN_MAC", "SHUTDOWN_BOTH", "SPOTIFY_PAUSE", "SPOTIFY_PLAY"]:
-            payload = {"action": action}
+
+        # Encolar para el agente local de Windows/Mac
+        elif action == "SHUTDOWN_WINDOWS":
+            agent_queue.add_command("SHUTDOWN", target="windows")
+            payload = {"target": "windows"}
+
+        elif action == "SHUTDOWN_MAC":
+            agent_queue.add_command("SHUTDOWN", target="mac")
+            payload = {"target": "mac"}
+
+        elif action == "SHUTDOWN_BOTH":
+            agent_queue.add_command("SHUTDOWN", target="both")
+            payload = {"target": "both"}
+
+        elif action == "SPOTIFY_PAUSE":
+            agent_queue.add_command("SPOTIFY_PAUSE", target="windows")
+            payload = {"status": "paused"}
+
+        elif action == "SPOTIFY_PLAY":
+            agent_queue.add_command("SPOTIFY_PLAY", target="windows")
+            payload = {"status": "resumed"}
 
         return reply, action, payload
 
     def process_voice_message(self, audio_path: Path) -> Tuple[str, str, str, Dict[str, Any]]:
-        """
-        Flujo completo: Transcripción -> Detección de Acción y Respuesta -> Guardado en ChromaDB
-        """
         transcript = self.transcribe_audio(audio_path)
         if not transcript:
             return "Silencio", "No logré escucharte con claridad, Jhulian. ¿Podrías repetirlo?", "NONE", {}
