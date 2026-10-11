@@ -15,6 +15,7 @@ from app.config import (
     OPENAI_MODEL,
     GEMINI_MODEL
 )
+import time
 from app.services.tts_service import tts_service
 from app.services.chroma_service import memory_service
 from app.services.openai_service import openai_service
@@ -23,6 +24,10 @@ from app.services.agent_service import agent_queue
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Rate limit para voz: máximo 1 solicitud cada 5 segundos
+LAST_VOICE_REQUEST_TIME: float = 0.0
+VOICE_RATE_LIMIT_SECONDS: float = 5.0
 
 async def auto_resume_after_speech(delay_seconds: float):
     await asyncio.sleep(delay_seconds)
@@ -73,7 +78,7 @@ async def health_check():
         "active_model": active_model,
         "chroma_status": "ready" if memory_service.collection is not None else "in-memory-fallback",
         "voice": tts_service.voice,
-        "security_locked": agent_queue.estado_seguridad["bloqueado"]
+        "security_locked": agent_queue.verificar_seguridad()
     }
 
 @router.get("/agent/poll")
@@ -90,7 +95,7 @@ async def agent_poll(
         "status": "ok",
         "agent": agent_id,
         "commands": pending_commands,
-        "security_locked": agent_queue.estado_seguridad["bloqueado"]
+        "security_locked": agent_queue.verificar_seguridad()
     }
 
 @router.get("/pause")
@@ -129,6 +134,19 @@ async def jarvis_voice_endpoint(
 ):
     """Endpoint principal de voz con soporte universal para hardware y atenuación de música."""
     extract_and_verify(request, x_api_key, api_key)
+
+    # Control de frecuencia: máximo 1 solicitud cada 5 segundos para evitar triggers múltiples
+    global LAST_VOICE_REQUEST_TIME
+    current_time = time.time()
+    elapsed = current_time - LAST_VOICE_REQUEST_TIME
+    if elapsed < VOICE_RATE_LIMIT_SECONDS:
+        wait_time = round(VOICE_RATE_LIMIT_SECONDS - elapsed, 1)
+        logger.warning(f"[RATE-LIMIT] Petición descartada por trigger duplicado ({elapsed:.2f}s < 5.0s, esperar {wait_time}s)")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Límite de solicitudes alcanzado. Por favor espera {wait_time} segundos antes de enviar otro comando."
+        )
+    LAST_VOICE_REQUEST_TIME = current_time
 
     # Pausa en ambas PCs mientras procesamos
     agent_queue.add_command("SPOTIFY_PAUSE", target="both")

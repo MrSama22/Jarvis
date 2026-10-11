@@ -15,8 +15,8 @@ class AgentCommandQueue:
             "all": time.time()
         }
         self.estado_seguridad = {
-            "bloqueado": False,
-            "ultima_verificacion": time.time(),
+            "bloqueado": True,
+            "ultima_verificacion": 0.0,
             "tiempo_maximo_sesion": 6 * 3600
         }
 
