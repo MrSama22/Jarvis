@@ -1,4 +1,6 @@
 import re
+import os
+import time
 import uuid
 import logging
 import asyncio
@@ -61,6 +63,7 @@ def _generate_openai_speech(text: str, output_path: Path):
 class TTSService:
     def __init__(self, voice: str = VOICE_NAME):
         self.voice = voice
+        self.edge_cooldown_until = 0.0
 
     async def generate_audio(self, text: str) -> Path:
         """
@@ -76,15 +79,22 @@ class TTSService:
         filename = f"response_{uuid.uuid4().hex[:8]}.mp3"
         output_path = TEMP_AUDIO_DIR / filename
 
-        # 1. Intentar con Edge-TTS
-        try:
-            logger.info(f"Intentando síntesis TTS con Edge-TTS (voz '{self.voice}')...")
-            communicate = edge_tts.Communicate(text=cleaned_text, voice=self.voice)
-            await communicate.save(str(output_path))
-            if output_path.exists() and output_path.stat().st_size > 0:
-                return output_path
-        except Exception as edge_err:
-            logger.warning(f"[TTS] Edge-TTS falló ({edge_err}). Conmutando automáticamente a OpenAI TTS...")
+        tts_pref = os.getenv("TTS_PROVIDER", "auto").lower()
+        should_try_edge = (tts_pref != "openai") and (time.time() >= self.edge_cooldown_until)
+
+        # 1. Intentar con Edge-TTS (si no está en cooldown por error 403 o red)
+        if should_try_edge:
+            try:
+                logger.info(f"Intentando síntesis TTS con Edge-TTS (voz '{self.voice}')...")
+                communicate = edge_tts.Communicate(text=cleaned_text, voice=self.voice)
+                await communicate.save(str(output_path))
+                if output_path.exists() and output_path.stat().st_size > 0:
+                    return output_path
+            except Exception as edge_err:
+                self.edge_cooldown_until = time.time() + 600  # Cooldown de 10 min ante bloqueo 403
+                logger.warning(f"[TTS] Edge-TTS falló ({edge_err}). Cooldown activado (10m). Conmutando a OpenAI TTS...")
+        elif time.time() < self.edge_cooldown_until:
+            logger.info("[TTS] Edge-TTS en cooldown tras error 403 previo. Usando OpenAI TTS directamente.")
 
         # 2. Fallback automático a OpenAI TTS (Voz 'onyx')
         if OPENAI_API_KEY:

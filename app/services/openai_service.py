@@ -10,7 +10,8 @@ from app.config import (
     OPENAI_BASE_URL,
     OPENAI_MODEL,
     OPENAI_TRANSCRIBE_MODEL,
-    MAX_RESPONSE_TOKENS
+    MAX_RESPONSE_TOKENS,
+    TIMEZONE_OFFSET
 )
 from app.services.chroma_service import memory_service
 from app.services.agent_service import agent_queue
@@ -55,6 +56,54 @@ def check_pin_authorization(text: str) -> bool:
     ]
     return any(v in clean for v in valid_variations)
 
+def numero_a_palabras_es(n: int) -> str:
+    unidades = ['', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho', 'nueve', 'diez',
+                'once', 'doce', 'trece', 'catorce', 'quince', 'dieciséis', 'diecisiete', 'dieciocho', 'diecinueve']
+    decenas = ['', '', 'veinte', 'treinta', 'cuarenta', 'cincuenta']
+    if n < 20:
+        return unidades[n]
+    if n == 20:
+        return 'veinte'
+    if 21 <= n <= 29:
+        return 'veinti' + unidades[n - 20]
+    d = n // 10
+    u = n % 10
+    if u == 0:
+        return decenas[d]
+    return f"{decenas[d]} y {unidades[u]}"
+
+def format_natural_time(dt: Any) -> str:
+    h = dt.hour % 12
+    if h == 0:
+        h = 12
+    m = dt.minute
+
+    prefijo = "Es la una" if h == 1 else f"Son las {numero_a_palabras_es(h)}"
+    if m == 0:
+        min_str = "en punto"
+    elif m == 1:
+        min_str = "y un minuto"
+    elif m == 15:
+        min_str = "y cuarto"
+    elif m == 30:
+        min_str = "y media"
+    else:
+        min_str = f"y {numero_a_palabras_es(m)}"
+
+    if 0 <= dt.hour < 12:
+        periodo = "de la mañana"
+    elif 12 <= dt.hour < 19:
+        periodo = "de la tarde"
+    else:
+        periodo = "de la noche"
+
+    return f"{prefijo} {min_str} {periodo}, Jhulian."
+
+def format_natural_date(dt: Any) -> str:
+    dias_sem = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo']
+    meses_nom = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+    return f"Hoy es {dias_sem[dt.weekday()]}, {dt.day} de {meses_nom[dt.month-1]} de {dt.year}, Jhulian."
+
 SYSTEM_PROMPT = """
 Eres JARVIS, el asistente personal inteligente de Jhulian. Tu respuesta será leída en voz alta por un sintetizador de voz (TTS).
 Posees amplio conocimiento, capacidad de cálculo y control total sobre las computadoras de Jhulian (Windows y Mac) y su música.
@@ -78,7 +127,8 @@ Reglas de respuesta y flexibilidad acústica:
 5. Saludos y llamada por nombre: Si Jhulian solo dice "Jarvis", "Hola Jarvis", "Oye Jarvis" o te saluda sin dar una orden, responde de forma breve y atenta esperando su orden: "Dime, Jhulian, te escucho."
 6. Ejecución directa: NUNCA hagas preguntas confirmatorias innecesarias (como "¿Estás seguro?") cuando Jhulian te dé una orden clara. Ejecútala de inmediato.
 7. No uses asteriscos, negritas, listas ni símbolos de Markdown.
-8. SIEMPRE debes retornar un JSON válido con esta estructura:
+8. Precisión temporal y fecha en tiempo real: La fecha y hora exacta actual de Jhulian está provista en el contexto del sistema. Si el usuario pregunta la hora o la fecha, utiliza ÚNICAMENTE esa hora y fecha exacta en tiempo real. NUNCA inventes minutos, NUNCA redondees y NUNCA uses horas mencionadas en turnos anteriores del historial de conversación.
+9. SIEMPRE debes retornar un JSON válido con esta estructura:
 {
   "action": "ACCION_DETECTADA",
   "reply": "Tu respuesta hablada para Jhulian"
@@ -144,16 +194,62 @@ class OpenAIService:
 
         esta_bloqueado = agent_queue.verificar_seguridad()
 
-        # Obtener fecha y hora local precisa de Jhulian (UTC-5)
+        # Obtener fecha y hora local precisa de Jhulian según TIMEZONE_OFFSET (UTC-5 por defecto)
         import datetime
-        tz_local = datetime.timezone(datetime.timedelta(hours=-5))
+        tz_local = datetime.timezone(datetime.timedelta(hours=TIMEZONE_OFFSET))
         ahora = datetime.datetime.now(tz_local)
+        hora_natural = format_natural_time(ahora)
+        fecha_natural = format_natural_date(ahora)
+
+        user_text_lower = user_text.lower()
+
+        # Detección directa e infalible de preguntas sobre la hora y fecha (0ms de latencia, 100% de precisión matemática sin alucinaciones de LLM)
+        clean_q = user_text_lower
+        for ch in "¿?.,¡!":
+            clean_q = clean_q.replace(ch, "")
+        clean_q = clean_q.replace("jarvis", "").replace("por favor", "").replace("oye", "").strip()
+
+        es_pregunta_hora = clean_q in [
+            "qué hora es", "que hora es", "qué horas son", "que horas son",
+            "la hora", "dime la hora", "dame la hora", "tienes la hora",
+            "qué hora tienes", "que hora tienes", "me dices la hora", "me das la hora",
+            "hora actual", "cuál es la hora", "cual es la hora", "qué horas tenemos",
+            "que horas tenemos", "sabes la hora", "sabes qué hora es", "sabes que hora es",
+            "qué hora será", "que hora sera"
+        ] or (
+            ("hora" in clean_q or "horas" in clean_q)
+            and any(clean_q.startswith(p) for p in ["qué hora", "que hora", "qué horas", "que horas", "dime la hora", "dame la hora", "la hora"])
+            and not any(k in clean_q for k in ["en ", "del ", "de la ", "vuelo", "partido", "abren", "cierran", "película", "serie", "sale", "llega", "termina"])
+        )
+
+        es_pregunta_fecha = clean_q in [
+            "qué día es hoy", "que dia es hoy", "qué día es", "que dia es",
+            "qué fecha es hoy", "que fecha es hoy", "qué fecha es", "que fecha es",
+            "cuál es la fecha", "cual es la fecha", "fecha de hoy", "fecha actual",
+            "a qué estamos hoy", "a que estamos hoy", "a cuántos estamos", "a cuantos estamos"
+        ]
+
+        if es_pregunta_hora:
+            action = "NONE"
+            payload = {"status": "time_reported", "time": ahora.strftime("%H:%M")}
+            return hora_natural, action, payload
+
+        if es_pregunta_fecha:
+            action = "NONE"
+            payload = {"status": "date_reported", "date": ahora.strftime("%Y-%m-%d")}
+            return fecha_natural, action, payload
+
         dias_sem = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo']
         meses_nom = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
         hora_str = ahora.strftime('%I:%M %p').lstrip('0')
-        fecha_completa = f"{dias_sem[ahora.weekday()]}, {ahora.day} de {meses_nom[ahora.month-1]} de {ahora.year}, hora actual {hora_str}"
+        fecha_completa = f"{dias_sem[ahora.weekday()]}, {ahora.day} de {meses_nom[ahora.month-1]} de {ahora.year}, hora actual {hora_str} ({hora_natural})"
 
-        relevant_memory = memory_service.search_context(user_text, n_results=2)
+        es_consulta_directa = any(k in user_text_lower for k in [
+            "hora", "horas", "fecha", "día", "dia", "pausa", "play", "música", "musica",
+            "apaga", "apagar", "prende", "prender", "enciende", "bloquea", "desbloquea",
+            "silencio", "mute", "cancela", "cancelar"
+        ])
+        relevant_memory = "" if es_consulta_directa else memory_service.search_context(user_text, n_results=2)
         recent_history = memory_service.get_recent_history_context()
 
         messages = [
@@ -161,7 +257,7 @@ class OpenAIService:
         ]
 
         context_notes = [
-            f"Fecha y hora actual local de Jhulian: {fecha_completa}",
+            f"Fecha y hora actual local de Jhulian (TIEMPO REAL EXACTO): {fecha_completa}",
             f"Estado de seguridad del hardware: {'BLOQUEADO (la única validación autorizada es acercarse a la cámara)' if esta_bloqueado else 'DESPEJADO (validado por cámara, acciones autorizadas)'}"
         ]
         if relevant_memory:
@@ -177,7 +273,7 @@ class OpenAIService:
             messages=messages,
             response_format={"type": "json_object"},
             max_tokens=MAX_RESPONSE_TOKENS,
-            temperature=0.5,
+            temperature=0.2,
         )
 
         content = response.choices[0].message.content.strip()

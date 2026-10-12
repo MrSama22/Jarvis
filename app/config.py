@@ -29,6 +29,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 # Seguridad y Voz
 JARVIS_API_KEY = os.getenv("JARVIS_API_KEY", "jarvis_secret_key_12345")
 VOICE_NAME = os.getenv("VOICE_NAME", "es-MX-JorgeNeural")
+TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "-5"))
 
 # Puerto y Host
 HOST = os.getenv("HOST", "0.0.0.0")

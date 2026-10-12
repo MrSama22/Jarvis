@@ -69,9 +69,10 @@ class ChromaMemoryService:
 
     def save_turn(self, user_text: str, assistant_text: str):
         """
-        Guarda el turno en el buffer reciente y en ChromaDB para búsqueda futura.
+        Guarda el turno en el buffer reciente (instantáneo en RAM) y en ChromaDB
+        en segundo plano para no demorar la respuesta de voz al usuario.
         """
-        # Guardar en buffer deslizante
+        # Guardar en buffer deslizante en RAM (0ms)
         self.recent_turns.append({
             "user": user_text,
             "assistant": assistant_text,
@@ -80,23 +81,28 @@ class ChromaMemoryService:
         if len(self.recent_turns) > self.max_recent_turns:
             self.recent_turns.pop(0)
 
-        # Guardar en ChromaDB
+        # Guardar en ChromaDB de forma asíncrona/hilo en segundo plano
         if self.collection and user_text.strip():
-            try:
-                doc_text = f"Usuario preguntó: {user_text}\nJarvis respondió: {assistant_text}"
-                doc_id = str(uuid.uuid4())
-                self.collection.add(
-                    documents=[doc_text],
-                    metadatas=[{
-                        "timestamp": datetime.now().isoformat(),
-                        "user_query": user_text[:150],
-                        "source": "voice_interaction"
-                    }],
-                    ids=[doc_id]
-                )
-                logger.info(f"Nuevo recuerdo guardado en ChromaDB con ID: {doc_id}")
-            except Exception as e:
-                logger.error(f"Error al guardar memoria en ChromaDB: {e}")
+            import threading
+
+            def _persist_to_chroma(u_text: str, a_text: str):
+                try:
+                    doc_text = f"Usuario preguntó: {u_text}\nJarvis respondió: {a_text}"
+                    doc_id = str(uuid.uuid4())
+                    self.collection.add(
+                        documents=[doc_text],
+                        metadatas=[{
+                            "timestamp": datetime.now().isoformat(),
+                            "user_query": u_text[:150],
+                            "source": "voice_interaction"
+                        }],
+                        ids=[doc_id]
+                    )
+                    logger.info(f"Nuevo recuerdo guardado en ChromaDB con ID: {doc_id}")
+                except Exception as e:
+                    logger.error(f"Error al guardar memoria en ChromaDB: {e}")
+
+            threading.Thread(target=_persist_to_chroma, args=(user_text, assistant_text), daemon=True).start()
 
 # Instancia singleton del servicio
 memory_service = ChromaMemoryService()

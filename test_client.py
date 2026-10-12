@@ -9,9 +9,19 @@ API_KEY = "jarvis_secret_key_12345"
 
 async def create_sample_audio(text: str, filename: str) -> str:
     """Crea un archivo de audio simulando la voz del usuario."""
-    communicate = edge_tts.Communicate(text, "es-MX-JorgeNeural")
-    await communicate.save(filename)
-    return filename
+    try:
+        communicate = edge_tts.Communicate(text, "es-MX-JorgeNeural")
+        await communicate.save(filename)
+        return filename
+    except Exception as e:
+        print(f"[!] Edge-TTS falló ({e}), usando OpenAI TTS para generar audio de prueba...")
+        from openai import OpenAI
+        from dotenv import load_dotenv
+        load_dotenv()
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        resp = client.audio.speech.create(model="tts-1", voice="onyx", input=text)
+        resp.write_to_file(filename)
+        return filename
 
 def test_jarvis_endpoint():
     print(f"--- Probando endpoint en la NUBE: {RENDER_URL} ---")

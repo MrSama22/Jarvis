@@ -319,9 +319,13 @@ async def jarvis_voice_endpoint(
         payload = {}
 
         if AI_PROVIDER == "openai":
-            user_transcript, assistant_reply, action, payload = openai_service.process_voice_message(temp_input_path)
+            user_transcript, assistant_reply, action, payload = await asyncio.to_thread(
+                openai_service.process_voice_message, temp_input_path
+            )
         else:
-            user_transcript, assistant_reply = gemini_service.process_voice_message(temp_input_path)
+            user_transcript, assistant_reply = await asyncio.to_thread(
+                gemini_service.process_voice_message, temp_input_path
+            )
 
         logger.info(f"Usuario: {user_transcript} | Jarvis: {assistant_reply} | Acción: {action}")
 
