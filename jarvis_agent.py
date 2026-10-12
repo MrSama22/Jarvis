@@ -40,7 +40,7 @@ def asegurar_instancia_unica():
 # Configuración del Backend en la Nube
 SERVER_URL = os.getenv("RENDER_URL", "https://jarvis-fbff.onrender.com")
 API_KEY = os.getenv("JARVIS_API_KEY", "jarvis_secret_key_12345")
-POLL_INTERVAL = 0.8
+POLL_INTERVAL = 0.25
 
 def ejecutar_comando_local(comando: str):
     try:
