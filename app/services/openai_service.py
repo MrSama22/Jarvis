@@ -553,11 +553,18 @@ class OpenAIService:
 
         # Alucinaciones comunes de Whisper cuando hay silencio o subtítulos generados
         alucinaciones_silencio = {
-            "", "you", "subtítulos por la comunidad de amara.org",
-            "suscríbete al canal", "suscribete al canal", "...", "suscríbete",
-            "subtítulos", "subtitulos", "gracias por ver", "thank you"
+            "", "you", "...", "thank you", "gracias por ver", "subtítulos", "subtitulos"
         }
-        if not transcript_clean or transcript_clean in alucinaciones_silencio or len(transcript_clean) < 2:
+        keywords_silencio = [
+            "amara.org", "subtítulo", "subtitulo", "suscríb", "suscrib", "gracias por ver", "canal"
+        ]
+        is_silence = (
+            not transcript_clean
+            or len(transcript_clean) < 2
+            or transcript_clean in alucinaciones_silencio
+            or any(kw in transcript_clean for kw in keywords_silencio)
+        )
+        if is_silence:
             logger.info(f"[JARVIS BRAIN] Silencio o audio vacío detectado: '{transcript}'")
             reply = ""
             action = "NONE"
