@@ -46,14 +46,19 @@ CRITICAL_HARDWARE_ACTIONS = {
 
 def check_pin_authorization(text: str) -> bool:
     """Verifica si el texto contiene el PIN maestro de seguridad 1012 en formato número o texto."""
-    clean = text.lower().replace("-", " ").replace(".", " ")
+    clean = text.lower().replace("-", " ").replace(".", " ").replace(",", " ")
     valid_variations = [
         "1012",
         "10 12",
         "diez doce",
         "mil doce",
-        "uno cero uno dos"
+        "uno cero uno dos",
+        "diez y doce",
+        "1 0 1 2"
     ]
+    pin_env = os.getenv("SECURITY_PIN", "").strip()
+    if pin_env and pin_env not in valid_variations:
+        valid_variations.append(pin_env.lower())
     return any(v in clean for v in valid_variations)
 
 def numero_a_palabras_es(n: int) -> str:
@@ -113,9 +118,9 @@ Dispositivos:
 - Mac PC (macOS): MAC FC:45:96:79:EE:7D
 
 Protocolo de Seguridad:
-- La ÚNICA validación autorizada para el control de hardware (apagar o encender computadoras) es mediante la cámara (reconocimiento facial).
-- Si el usuario intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO, responde con action "SECURITY_DENIED" diciendo exactamente: "Acceso denegado. Por favor, acércate a la cámara para verificar tu identidad."
-- Si el usuario pide desbloquear por voz o menciona contraseñas, responde con action "SECURITY_DENIED" indicando que la única validación es por cámara.
+- El control de hardware (apagar o encender computadoras) requiere autorización por cámara (reconocimiento facial) o mediante la contraseña maestra (PIN 1012).
+- Si el usuario intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO, responde con action "SECURITY_CHALLENGE" diciendo: "Protocolo de seguridad activo. ¿Cuál es la contraseña o posiciónate frente a la cámara para autorizar la orden, Jhulian?"
+- Si el usuario proporciona la contraseña correcta, el sistema autoriza y ejecuta la acción solicitada.
 - Si el usuario pide "bloquear", "bloquea el sistema", "bloquea las pc" o "bloqueo de seguridad", confirma el bloqueo con action "SECURITY_LOCK".
 - La música NUNCA requiere seguridad de cámara: pausar, reproducir o reanudar música SIEMPRE está permitido sin bloqueos.
 
@@ -145,14 +150,37 @@ Acciones posibles para el campo "action":
 - "SHUTDOWN_MAC": Apagar la Mac.
 - "SHUTDOWN_BOTH": Apagar ambas computadoras ("apaga las pcs", "apaga las computadoras", "apaga los equipos", "apaga ambas", "apaga todo").
 - "SECURITY_LOCK": Activar protocolo de seguridad / bloquear hardware.
-- "SECURITY_DENIED": Si Jhulian intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO.
+- "SECURITY_CHALLENGE": Si Jhulian intenta apagar o encender computadoras y se requiere contraseña o cámara.
+- "SECURITY_UNLOCK": Si Jhulian proporciona la contraseña de seguridad o desbloquea.
+- "SECURITY_DENIED": Si la contraseña ingresada es incorrecta o acceso rechazado.
 - "NONE": Para cualquier otra consulta general, informativa o saludo.
 """
 
 class OpenAIService:
     def __init__(self):
         self.client = None
+        self.pending_hardware_action: Optional[Dict[str, Any]] = None
         self._init_client()
+
+    def has_valid_pending_action(self, max_age_seconds: float = 90.0) -> bool:
+        """Verifica si existe una orden de hardware pendiente reciente esperando autorización."""
+        if not self.pending_hardware_action:
+            return False
+        import time
+        age = time.time() - self.pending_hardware_action.get("timestamp", 0)
+        if age > max_age_seconds:
+            self.pending_hardware_action = None
+            return False
+        return True
+
+    def consume_pending_hardware_action(self, max_age_seconds: float = 90.0) -> Optional[Dict[str, Any]]:
+        """Obtiene y consume la orden pendiente si no ha expirado."""
+        if self.has_valid_pending_action(max_age_seconds):
+            action = self.pending_hardware_action
+            self.pending_hardware_action = None
+            return action
+        self.pending_hardware_action = None
+        return None
 
     def _init_client(self):
         if OPENAI_API_KEY:
@@ -335,7 +363,7 @@ class OpenAIService:
             payload = {"status": "paused"}
             return reply, action, payload
 
-        # 2. Control de hardware (Apagar / Prender computadoras - requiere cámara o PIN maestro si está bloqueado)
+        # 2. Detección de comandos de hardware
         is_lock_command = ("desbloque" not in user_text_lower) and any(k in user_text_lower for k in ["bloquear", "bloquea", "bloqueo", "bloqueo de seguridad", "activar seguridad", "activa seguridad", "cerrar sesión"])
         intento_apagar = any(k in user_text_lower for k in [
             "apaga", "apagar", "apague", "apágala", "apágalo", "apágalas", "apagalas", "apaguen", "apáguenlas", "apáguelos", "apaguelos"
@@ -354,83 +382,168 @@ class OpenAIService:
                     or any(p in user_text_lower for p in plurales_pcs)
                     or action in ["SHUTDOWN_BOTH", "WOL_BOTH"])
 
-        if intento_hardware or (action in CRITICAL_HARDWARE_ACTIONS):
-            pin_valido = check_pin_authorization(user_text)
-            if esta_bloqueado and not pin_valido:
-                action = "SECURITY_DENIED"
-                reply = "Acceso denegado. Por favor, acércate a la cámara para verificar tu identidad, Jhulian."
-                payload = {"status": "denied", "reason": "camera_verification_required", "require": "camera"}
-            else:
-                if pin_valido and esta_bloqueado:
-                    agent_queue.desbloquear()
-                    logger.info("[SEGURIDAD] Autorización concedida vía PIN maestro 1012.")
+        # 3. Control de PIN y respuesta a retos de seguridad
+        pin_valido = check_pin_authorization(user_text)
 
-                if intento_apagar or action.startswith("SHUTDOWN"):
-                    if es_ambas:
-                        action = "SHUTDOWN_BOTH"
-                        if not any(k in reply.lower() for k in ["ambas", "computadoras", "pcs", "equipos"]):
-                            reply = "Apagando ambas computadoras de inmediato, Jhulian."
-                    elif "mac" in user_text_lower or action == "SHUTDOWN_MAC":
-                        action = "SHUTDOWN_MAC"
-                        if "mac" not in reply.lower():
-                            reply = "Apagando la Mac de inmediato, Jhulian."
-                    else:
-                        action = "SHUTDOWN_WINDOWS"
-                        if "windows" not in reply.lower() and "pc principal" not in reply.lower():
-                            reply = "Apagando la PC principal de inmediato, Jhulian."
+        # Si el usuario solo dice el PIN o código para desbloquear (sin una orden de hardware nueva)
+        if pin_valido and not intento_hardware:
+            agent_queue.desbloquear()
+            pending = self.consume_pending_hardware_action()
+            if pending:
+                action_to_run = pending["action"]
+                target = pending.get("target", "both")
+                logger.info(f"[SEGURIDAD] PIN verificado. Ejecutando acción pendiente: {action_to_run} -> {target}")
 
-                elif intento_prender or action.startswith("WOL"):
-                    if es_ambas:
-                        action = "WOL_BOTH"
-                        if not any(k in reply.lower() for k in ["ambas", "computadoras", "pcs", "equipos"]):
-                            reply = "Encendiendo ambas computadoras, Jhulian."
-                    elif "mac" in user_text_lower or action == "WOL_MAC":
-                        action = "WOL_MAC"
-                        if "mac" not in reply.lower():
-                            reply = "Encendiendo la Mac, Jhulian."
-                    else:
-                        action = "WOL_WINDOWS"
-                        if "windows" not in reply.lower() and "pc principal" not in reply.lower():
-                            reply = "Encendiendo la PC principal, Jhulian."
-
-                if action == "WOL_WINDOWS":
-                    payload = DEVICES["WINDOWS"]
-                elif action == "WOL_MAC":
-                    payload = DEVICES["MAC"]
-                elif action == "WOL_BOTH":
-                    payload = {"devices": [DEVICES["WINDOWS"], DEVICES["MAC"]]}
-                elif action == "SHUTDOWN_WINDOWS":
-                    agent_queue.add_command("SHUTDOWN", target="windows")
-                    payload = {"target": "windows"}
-                elif action == "SHUTDOWN_MAC":
-                    agent_queue.add_command("SHUTDOWN", target="mac")
-                    payload = {"target": "mac"}
-                elif action == "SHUTDOWN_BOTH":
+                if action_to_run == "SHUTDOWN_BOTH":
                     agent_queue.add_command("SHUTDOWN", target="both")
-                    payload = {"target": "both"}
+                    reply = "Contraseña confirmada. Apagando ambas computadoras de inmediato, Jhulian."
+                    action = "SHUTDOWN_BOTH"
+                    payload = {"status": "executed", "action": "SHUTDOWN_BOTH", "target": "both", "auth": "pin"}
+                elif action_to_run == "SHUTDOWN_WINDOWS":
+                    agent_queue.add_command("SHUTDOWN", target="windows")
+                    reply = "Contraseña confirmada. Apagando la PC principal de inmediato, Jhulian."
+                    action = "SHUTDOWN_WINDOWS"
+                    payload = {"status": "executed", "action": "SHUTDOWN_WINDOWS", "target": "windows", "auth": "pin"}
+                elif action_to_run == "SHUTDOWN_MAC":
+                    agent_queue.add_command("SHUTDOWN", target="mac")
+                    reply = "Contraseña confirmada. Apagando la Mac de inmediato, Jhulian."
+                    action = "SHUTDOWN_MAC"
+                    payload = {"status": "executed", "action": "SHUTDOWN_MAC", "target": "mac", "auth": "pin"}
+                elif action_to_run == "WOL_BOTH":
+                    reply = "Contraseña confirmada. Encendiendo ambas computadoras, Jhulian."
+                    action = "WOL_BOTH"
+                    payload = {"devices": [DEVICES["WINDOWS"], DEVICES["MAC"]], "auth": "pin"}
+                elif action_to_run == "WOL_WINDOWS":
+                    reply = "Contraseña confirmada. Encendiendo la PC principal, Jhulian."
+                    action = "WOL_WINDOWS"
+                    payload = DEVICES["WINDOWS"]
+                elif action_to_run == "WOL_MAC":
+                    reply = "Contraseña confirmada. Encendiendo la Mac, Jhulian."
+                    action = "WOL_MAC"
+                    payload = DEVICES["MAC"]
 
-        # 3. Comando explícito de bloqueo
+                return reply, action, payload
+            else:
+                action = "SECURITY_UNLOCK"
+                reply = "Código de seguridad verificado. Protocolo levantado, sistemas autorizados, Jhulian."
+                payload = {"status": "unlocked", "method": "pin"}
+                return reply, action, payload
+
+        # Si había una acción pendiente pero el PIN no fue dicho (cancelación o intento incorrecto)
+        elif self.has_valid_pending_action() and not intento_hardware:
+            if any(k in user_text_lower for k in ["cancela", "cancelar", "cancel", "olvidalo", "olvídalo", "abortar", "no hagas nada"]):
+                self.pending_hardware_action = None
+                action = "CANCEL"
+                agent_queue.add_command("SPOTIFY_PLAY", target="both")
+                reply = "Comando cancelado, Jhulian."
+                payload = {"status": "cancelled"}
+                return reply, action, payload
+            elif not any(k in user_text_lower for k in ["apaga", "prende", "enciende", "bloquea"]):
+                pending = self.pending_hardware_action
+                desc = pending.get("description", "la orden")
+                action = "SECURITY_DENIED"
+                reply = f"Contraseña incorrecta. Por favor, di la contraseña correcta o posiciónate frente a la cámara para autorizar {desc}, Jhulian."
+                payload = {"status": "denied", "reason": "invalid_pin", "require": "auth"}
+                return reply, action, payload
+
+        if intento_hardware or (action in CRITICAL_HARDWARE_ACTIONS):
+            if intento_apagar or action.startswith("SHUTDOWN"):
+                if es_ambas:
+                    target_action = "SHUTDOWN_BOTH"
+                    target_dest = "both"
+                    target_desc = "el apagado de ambas computadoras"
+                    confirm_reply = "Apagando ambas computadoras de inmediato, Jhulian."
+                elif "mac" in user_text_lower or action == "SHUTDOWN_MAC":
+                    target_action = "SHUTDOWN_MAC"
+                    target_dest = "mac"
+                    target_desc = "el apagado de la Mac"
+                    confirm_reply = "Apagando la Mac de inmediato, Jhulian."
+                else:
+                    target_action = "SHUTDOWN_WINDOWS"
+                    target_dest = "windows"
+                    target_desc = "el apagado de la PC principal"
+                    confirm_reply = "Apagando la PC principal de inmediato, Jhulian."
+            else: # Encender / WOL
+                if es_ambas:
+                    target_action = "WOL_BOTH"
+                    target_dest = "both"
+                    target_desc = "el encendido de ambas computadoras"
+                    confirm_reply = "Encendiendo ambas computadoras, Jhulian."
+                elif "mac" in user_text_lower or action == "WOL_MAC":
+                    target_action = "WOL_MAC"
+                    target_dest = "mac"
+                    target_desc = "el encendido de la Mac"
+                    confirm_reply = "Encendiendo la Mac, Jhulian."
+                else:
+                    target_action = "WOL_WINDOWS"
+                    target_dest = "windows"
+                    target_desc = "el encendido de la PC principal"
+                    confirm_reply = "Encendiendo la PC principal, Jhulian."
+
+            # Si el sistema está bloqueado y no se proporcionó el PIN en este mismo mensaje
+            if esta_bloqueado and not pin_valido:
+                import time
+                self.pending_hardware_action = {
+                    "action": target_action,
+                    "target": target_dest,
+                    "description": target_desc,
+                    "timestamp": time.time()
+                }
+                action = "SECURITY_CHALLENGE"
+                reply = f"Protocolo de seguridad activo. ¿Cuál es la contraseña o posiciónate frente a la cámara para autorizar {target_desc}, Jhulian?"
+                payload = {
+                    "status": "security_challenge",
+                    "pending_action": target_action,
+                    "require": "auth"
+                }
+                return reply, action, payload
+
+            # Si el PIN es válido o el sistema ya estaba despejado:
+            if pin_valido and esta_bloqueado:
+                agent_queue.desbloquear()
+                logger.info("[SEGURIDAD] Autorización concedida vía PIN maestro 1012 en comando directo.")
+
+            action = target_action
+            reply = confirm_reply
+
+            if action == "SHUTDOWN_BOTH":
+                agent_queue.add_command("SHUTDOWN", target="both")
+                payload = {"target": "both"}
+            elif action == "SHUTDOWN_WINDOWS":
+                agent_queue.add_command("SHUTDOWN", target="windows")
+                payload = {"target": "windows"}
+            elif action == "SHUTDOWN_MAC":
+                agent_queue.add_command("SHUTDOWN", target="mac")
+                payload = {"target": "mac"}
+            elif action == "WOL_BOTH":
+                payload = {"devices": [DEVICES["WINDOWS"], DEVICES["MAC"]]}
+            elif action == "WOL_WINDOWS":
+                payload = DEVICES["WINDOWS"]
+            elif action == "WOL_MAC":
+                payload = DEVICES["MAC"]
+
+            return reply, action, payload
+
+        # 4. Comando explícito de bloqueo
         elif action == "SECURITY_LOCK" or is_lock_command:
             agent_queue.bloquear()
+            self.pending_hardware_action = None
             action = "SECURITY_LOCK"
-            reply = "Protocolo de seguridad activado. Sistemas bloqueados, se requerirá cámara para el control de hardware."
-            payload = {"status": "locked", "require": "camera"}
+            reply = "Protocolo de seguridad activado. Sistemas bloqueados, se requerirá contraseña o cámara para el control de hardware."
+            payload = {"status": "locked", "require": "auth"}
+            return reply, action, payload
 
-        # 4. Intentos de desbloqueo verbal (Se deniegan salvo con el PIN maestro 1012 o cámara)
+        # 5. Intentos de desbloqueo verbal
         elif "desbloquear" in user_text_lower or "desbloquea" in user_text_lower or "código" in user_text_lower or "codigo" in user_text_lower or action == "SECURITY_UNLOCK":
-            if check_pin_authorization(user_text):
-                agent_queue.desbloquear()
-                action = "SECURITY_UNLOCK"
-                reply = "Código PIN maestro verificado. Protocolo de seguridad levantado, Jhulian."
-                payload = {"status": "unlocked", "method": "pin"}
-            elif esta_bloqueado:
+            if esta_bloqueado:
                 action = "SECURITY_DENIED"
-                reply = "Acceso denegado. La única validación autorizada es mediante la cámara o tu código PIN de seguridad, Jhulian."
-                payload = {"status": "denied", "reason": "camera_verification_required", "require": "camera"}
+                reply = "Acceso denegado. Por favor, di tu código de seguridad o acércate a la cámara para verificar tu identidad, Jhulian."
+                payload = {"status": "denied", "reason": "auth_required", "require": "auth"}
             else:
                 action = "NONE"
                 reply = "El sistema ya se encuentra validado y operativo, Jhulian."
                 payload = {"status": "already_unlocked"}
+            return reply, action, payload
 
         return reply, action, payload
 

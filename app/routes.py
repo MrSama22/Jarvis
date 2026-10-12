@@ -164,10 +164,23 @@ async def security_unlock(
     """Endpoint llamado por el sistema de cámara / OpenCV / MacroDroid tras reconocimiento facial."""
     extract_and_verify(request, x_api_key, api_key)
     agent_queue.desbloquear()
-    logger.info("[SEGURIDAD] Desbloqueo exitoso vía cámara / protocolo facial.")
+    pending = openai_service.consume_pending_hardware_action()
+    executed_action = None
+    if pending:
+        executed_action = pending.get("action")
+        target = pending.get("target", "both")
+        if executed_action.startswith("SHUTDOWN"):
+            agent_queue.add_command("SHUTDOWN", target=target)
+        msg = f"Identidad confirmada por cámara. Ejecutando {pending.get('description', 'la orden')} de inmediato, Jhulian."
+        logger.info(f"[SEGURIDAD] Acción pendiente ejecutada tras desbloqueo de cámara: {executed_action} -> {target}")
+    else:
+        msg = "Identidad confirmada. Protocolo de seguridad levantado, Jhulian."
+        logger.info("[SEGURIDAD] Desbloqueo exitoso vía cámara / protocolo facial.")
+
     return {
         "status": "unlocked",
-        "message": "Identidad confirmada. Protocolo de seguridad levantado.",
+        "message": msg,
+        "executed_action": executed_action,
         "expires_in_hours": 6
     }
 
@@ -234,11 +247,24 @@ async def security_verify_face(
     verified, message = openai_service.verify_face_image(image_bytes)
     if verified:
         agent_queue.desbloquear()
-        logger.info("[SEGURIDAD] Desbloqueo exitoso por reconocimiento facial con visión IA.")
+        pending = openai_service.consume_pending_hardware_action()
+        executed_action = None
+        if pending:
+            executed_action = pending.get("action")
+            target = pending.get("target", "both")
+            if executed_action.startswith("SHUTDOWN"):
+                agent_queue.add_command("SHUTDOWN", target=target)
+            msg = f"Identidad confirmada por cámara. Ejecutando {pending.get('description', 'la orden')} de inmediato, Jhulian."
+            logger.info(f"[SEGURIDAD] Acción pendiente ejecutada tras reconocimiento facial con IA: {executed_action} -> {target}")
+        else:
+            msg = message or "Identidad confirmada. Protocolo de seguridad levantado, Jhulian."
+            logger.info("[SEGURIDAD] Desbloqueo exitoso por reconocimiento facial con visión IA.")
+
         return {
             "status": "unlocked",
             "verified": True,
-            "message": message or "Identidad confirmada. Protocolo de seguridad levantado.",
+            "executed_action": executed_action,
+            "message": msg,
             "expires_in_hours": 6
         }
     else:
@@ -360,9 +386,9 @@ async def jarvis_voice_endpoint(
 
         is_followup = (
             ("?" in assistant_reply or "¿" in assistant_reply)
-            or (payload.get("status") == "listening")
+            or (payload.get("status") in ["listening", "security_challenge"])
             or (user_transcript.lower().strip() in ["jarvis", "hola jarvis", "oye jarvis", "hola", "dime jarvis"])
-            or (action == "SECURITY_DENIED" or payload.get("require") == "camera")
+            or (action in ["SECURITY_DENIED", "SECURITY_CHALLENGE"] or payload.get("require") in ["camera", "auth"])
         ) and (action not in ["SHUTDOWN_WINDOWS", "SHUTDOWN_MAC", "SHUTDOWN_BOTH", "SPOTIFY_PAUSE", "SPOTIFY_PLAY", "CANCEL"])
 
         # Si NO es una orden de apagar, pausar música o bloquear, y NO estamos esperando respuesta del usuario, reanudar la música
@@ -383,8 +409,8 @@ async def jarvis_voice_endpoint(
             response_headers["X-Jarvis-Target-Mac"] = payload["mac"]
         if "ip" in payload:
             response_headers["X-Jarvis-Target-Ip"] = payload["ip"]
-        if action == "SECURITY_DENIED" or payload.get("require") == "camera":
-            response_headers["X-Jarvis-Security"] = "CAMERA_REQUIRED"
+        if action in ["SECURITY_DENIED", "SECURITY_CHALLENGE"] or payload.get("require") in ["camera", "auth"]:
+            response_headers["X-Jarvis-Security"] = "AUTH_REQUIRED"
 
         return FileResponse(
             path=output_audio_path,
