@@ -29,6 +29,20 @@ router = APIRouter()
 LAST_VOICE_REQUEST_TIME: float = 0.0
 VOICE_RATE_LIMIT_SECONDS: float = 5.0
 
+# Registro del último turno de voz para diagnóstico y trazabilidad
+LAST_TURN_INFO: dict = {
+    "transcript": "Ninguno",
+    "reply": "Ninguno",
+    "action": "NONE",
+    "payload": {},
+    "timestamp": 0.0
+}
+
+@router.get("/last-turn")
+async def get_last_turn():
+    """Devuelve el último turno procesado por JARVIS (transcripción de Whisper, acción y respuesta)."""
+    return LAST_TURN_INFO
+
 async def auto_resume_after_speech(delay_seconds: float):
     await asyncio.sleep(delay_seconds)
     logger.info(f"[AUTO-RESUME] Reanudando música en Windows y Mac tras {delay_seconds:.1f}s")
@@ -310,6 +324,12 @@ async def jarvis_voice_endpoint(
             user_transcript, assistant_reply = gemini_service.process_voice_message(temp_input_path)
 
         logger.info(f"Usuario: {user_transcript} | Jarvis: {assistant_reply} | Acción: {action}")
+
+        LAST_TURN_INFO["transcript"] = user_transcript
+        LAST_TURN_INFO["reply"] = assistant_reply
+        LAST_TURN_INFO["action"] = action
+        LAST_TURN_INFO["payload"] = payload
+        LAST_TURN_INFO["timestamp"] = time.time()
 
         output_audio_path = await tts_service.generate_audio(assistant_reply)
         background_tasks.add_task(cleanup_file, output_audio_path)

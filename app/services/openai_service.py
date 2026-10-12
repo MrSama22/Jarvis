@@ -119,9 +119,10 @@ class OpenAIService:
 
         prompt_guia = (
             "Comandos de voz del usuario Jhulian para su asistente JARVIS: "
-            "Jarvis, pausa la música, pausar, pausala, dale play, reanudar música, reproducir, pon música, para la música, despausa, "
-            "apagar PC Windows, apagar Mac, apagar ambas computadoras, prender PC, prender Mac, "
-            "bloquear seguridad, desbloquear, verificar cámara, cancelar llamada, qué hora es, cómo estás."
+            "apaga las pcs, apagar las pcs, apaga las pc, apaga la pc, apaga las compus, apaga todo, "
+            "apagar computadoras, apaga Windows, apaga Mac, encender computadoras, prender pc, prender mac, "
+            "pausa la música, pausar, pausala, dale play, reanudar música, reproducir, pon música, para la música, despausa, "
+            "bloquear seguridad, desbloquear, verificar cámara, cancelar."
         )
 
         with open(audio_path, "rb") as audio_file:
@@ -130,7 +131,7 @@ class OpenAIService:
                 file=audio_file,
                 language="es",
                 prompt=prompt_guia,
-                temperature=0.2
+                temperature=0.0
             )
         return getattr(transcript_response, "text", "").strip()
 
