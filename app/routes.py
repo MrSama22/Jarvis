@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 from pathlib import Path
 from fastapi import APIRouter, Header, Query, Request, HTTPException, status, BackgroundTasks, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from app.config import (
     JARVIS_API_KEY,
@@ -25,9 +25,9 @@ from app.services.agent_service import agent_queue
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Rate limit para voz: máximo 1 solicitud cada 5 segundos
+# Rate limit para voz: mínimo 1.5s entre solicitudes para soportar diálogo conversacional fluido
 LAST_VOICE_REQUEST_TIME: float = 0.0
-VOICE_RATE_LIMIT_SECONDS: float = 5.0
+VOICE_RATE_LIMIT_SECONDS: float = 1.5
 
 # Registro del último turno de voz para diagnóstico y trazabilidad
 LAST_TURN_INFO: dict = {
@@ -331,11 +331,38 @@ async def jarvis_voice_endpoint(
         LAST_TURN_INFO["payload"] = payload
         LAST_TURN_INFO["timestamp"] = time.time()
 
-        output_audio_path = await tts_service.generate_audio(assistant_reply)
+        is_silence = (payload.get("status") == "silence") or (not assistant_reply.strip())
+        if is_silence:
+            return Response(
+                status_code=status.HTTP_204_NO_CONTENT,
+                headers={
+                    "X-Jarvis-Transcript": "Silencio",
+                    "X-Jarvis-Reply": "",
+                    "X-Jarvis-Action": "NONE",
+                    "X-Jarvis-Followup": "false",
+                    "X-Jarvis-Silence": "true",
+                }
+            )
+
+        try:
+            output_audio_path = await tts_service.generate_audio(assistant_reply)
+        except Exception as tts_err:
+            logger.error(f"Error inesperado en tts_service ({tts_err}). Generando audio de emergencia...", exc_info=True)
+            emergency_filename = f"response_{uuid.uuid4().hex[:8]}.mp3"
+            output_audio_path = TEMP_AUDIO_DIR / emergency_filename
+            with open(output_audio_path, "wb") as f:
+                f.write((b"\xff\xfb\x90\x00" + (b"\x00" * 413)) * 12)
         background_tasks.add_task(cleanup_file, output_audio_path)
 
-        # Si NO es una orden de apagar, pausar música o bloquear, reanudar la música automáticamente en ambas PCs tras la locución
-        if action not in ["SPOTIFY_PAUSE", "SHUTDOWN_WINDOWS", "SHUTDOWN_MAC", "SHUTDOWN_BOTH", "SECURITY_LOCK"]:
+        is_followup = (
+            ("?" in assistant_reply or "¿" in assistant_reply)
+            or (payload.get("status") == "listening")
+            or (user_transcript.lower().strip() in ["jarvis", "hola jarvis", "oye jarvis", "hola", "dime jarvis"])
+            or (action == "SECURITY_DENIED" or payload.get("require") == "camera")
+        ) and (action not in ["SHUTDOWN_WINDOWS", "SHUTDOWN_MAC", "SHUTDOWN_BOTH", "SPOTIFY_PAUSE", "SPOTIFY_PLAY", "CANCEL"])
+
+        # Si NO es una orden de apagar, pausar música o bloquear, y NO estamos esperando respuesta del usuario, reanudar la música
+        if not is_followup and action not in ["SPOTIFY_PAUSE", "SHUTDOWN_WINDOWS", "SHUTDOWN_MAC", "SHUTDOWN_BOTH", "SECURITY_LOCK"]:
             words_count = len(assistant_reply.split())
             speech_duration = max(1.8, (words_count / 2.6) + 1.0)
             background_tasks.add_task(auto_resume_after_speech, speech_duration)
@@ -345,6 +372,7 @@ async def jarvis_voice_endpoint(
             "X-Jarvis-Reply": assistant_reply.replace("\n", " ")[:200],
             "X-Jarvis-Action": action,
             "X-Jarvis-Payload": json.dumps(payload),
+            "X-Jarvis-Followup": "true" if is_followup else "false",
         }
 
         if "mac" in payload:
@@ -356,6 +384,7 @@ async def jarvis_voice_endpoint(
 
         return FileResponse(
             path=output_audio_path,
+            status_code=status.HTTP_202_ACCEPTED if is_followup else status.HTTP_200_OK,
             media_type="audio/mpeg",
             filename="respuesta_jarvis.mp3",
             headers=response_headers

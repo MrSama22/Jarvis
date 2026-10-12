@@ -72,11 +72,13 @@ Protocolo de Seguridad:
 
 Reglas de respuesta y flexibilidad acústica:
 1. Sé inteligente, flexible y MUY TOLERANTE a imperfecciones de transcripción, ruido de fondo, palabras cortadas o errores del micrófono del teléfono celular (por ejemplo si la transcripción dice "pausala", "pasa la musica", "pausa", "dale play", "despausa", "apagar compu", "apaga pc", "pon musica", "continua", etc.). Deduce la intención real de Jhulian a partir del contexto en vez de descartarla.
-2. Únicamente debes responder "No entendí tu comando." (con action: "NONE") si el texto es literalmente vacío, letras aleatorias sin significado o ruido completamente irreconocible.
+2. Únicamente debes responder "No entendí tu comando." (con action: "NONE") si el texto es literalmente letras aleatorias sin significado o ruido completamente irreconocible.
 3. Responde a CUALQUIER pregunta que te haga Jhulian: preguntas básicas, la hora, fecha, cálculos matemáticos, conceptos, ciencia o conversación casual con action: "NONE".
 4. Responde siempre de forma concisa, inteligente, natural, fluida y directa (máximo 1 a 2 oraciones, ideal para voz).
-5. No uses asteriscos, negritas, listas ni símbolos de Markdown.
-6. SIEMPRE debes retornar un JSON válido con esta estructura:
+5. Saludos y llamada por nombre: Si Jhulian solo dice "Jarvis", "Hola Jarvis", "Oye Jarvis" o te saluda sin dar una orden, responde de forma breve y atenta esperando su orden: "Dime, Jhulian, te escucho."
+6. Ejecución directa: NUNCA hagas preguntas confirmatorias innecesarias (como "¿Estás seguro?") cuando Jhulian te dé una orden clara. Ejecútala de inmediato.
+7. No uses asteriscos, negritas, listas ni símbolos de Markdown.
+8. SIEMPRE debes retornar un JSON válido con esta estructura:
 {
   "action": "ACCION_DETECTADA",
   "reply": "Tu respuesta hablada para Jhulian"
@@ -88,10 +90,10 @@ Acciones posibles para el campo "action":
 - "CANCEL": Si Jhulian dice "cancela", "cancelar", "cancel", "olvídalo", "abortar". Responde "Comando cancelado, Jhulian."
 - "WOL_WINDOWS": Encender la PC principal (Windows).
 - "WOL_MAC": Encender la Mac.
-- "WOL_BOTH": Encender ambas computadoras.
+- "WOL_BOTH": Encender ambas computadoras ("enciende las pcs", "enciende las computadoras", "prende ambas", "enciende todo").
 - "SHUTDOWN_WINDOWS": Apagar la PC principal (Windows).
 - "SHUTDOWN_MAC": Apagar la Mac.
-- "SHUTDOWN_BOTH": Apagar ambas computadoras.
+- "SHUTDOWN_BOTH": Apagar ambas computadoras ("apaga las pcs", "apaga las computadoras", "apaga los equipos", "apaga ambas", "apaga todo").
 - "SECURITY_LOCK": Activar protocolo de seguridad / bloquear hardware.
 - "SECURITY_DENIED": Si Jhulian intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO.
 - "NONE": Para cualquier otra consulta general, informativa o saludo.
@@ -237,34 +239,63 @@ class OpenAIService:
             payload = {"status": "paused"}
             return reply, action, payload
 
-        # 2. Control de hardware (Apagar / Prender computadoras - requiere cámara si está bloqueado)
+        # 2. Control de hardware (Apagar / Prender computadoras - requiere cámara o PIN maestro si está bloqueado)
         is_lock_command = ("desbloque" not in user_text_lower) and any(k in user_text_lower for k in ["bloquear", "bloquea", "bloqueo", "bloqueo de seguridad", "activar seguridad", "activa seguridad", "cerrar sesión"])
-        intento_apagar = any(k in user_text_lower for k in ["apaga", "apagar", "apague", "apágala", "apágalo"])
-        intento_prender = any(k in user_text_lower for k in ["prende", "prender", "prenda", "enciende", "encender", "encienda", "despierta", "préndela"])
+        intento_apagar = any(k in user_text_lower for k in [
+            "apaga", "apagar", "apague", "apágala", "apágalo", "apágalas", "apagalas", "apaguen", "apáguenlas", "apáguelos", "apaguelos"
+        ])
+        intento_prender = any(k in user_text_lower for k in [
+            "prende", "prender", "prenda", "enciende", "encender", "encienda", "despierta", "préndela", "préndelas", "prendelas", "enciéndelas", "enciendelas", "prendan", "enciendan"
+        ])
         intento_hardware = intento_apagar or intento_prender or (action in CRITICAL_HARDWARE_ACTIONS)
 
+        plurales_pcs = [
+            "pcs", "las pc", "las pcs", "las compus", "computadoras", "computadores", "las computadoras",
+            "los computadores", "equipos", "los equipos", "máquinas", "maquinas", "las máquinas",
+            "las maquinas", "ambas", "ambos", "las dos", "los dos", "todo", "todas"
+        ]
+        es_ambas = (("mac" in user_text_lower and "windows" in user_text_lower)
+                    or any(p in user_text_lower for p in plurales_pcs)
+                    or action in ["SHUTDOWN_BOTH", "WOL_BOTH"])
+
         if intento_hardware or (action in CRITICAL_HARDWARE_ACTIONS):
-            if esta_bloqueado:
+            pin_valido = check_pin_authorization(user_text)
+            if esta_bloqueado and not pin_valido:
                 action = "SECURITY_DENIED"
                 reply = "Acceso denegado. Por favor, acércate a la cámara para verificar tu identidad, Jhulian."
                 payload = {"status": "denied", "reason": "camera_verification_required", "require": "camera"}
             else:
-                # Sistema validado previamente por cámara (sesión activa de 6 horas)
-                if action not in CRITICAL_HARDWARE_ACTIONS:
-                    if intento_apagar:
-                        if "mac" in user_text_lower and ("windows" in user_text_lower or "ambas" in user_text_lower or "todo" in user_text_lower):
-                            action = "SHUTDOWN_BOTH"
-                        elif "mac" in user_text_lower:
-                            action = "SHUTDOWN_MAC"
-                        else:
-                            action = "SHUTDOWN_WINDOWS"
-                    elif intento_prender:
-                        if "mac" in user_text_lower and ("windows" in user_text_lower or "ambas" in user_text_lower or "dos" in user_text_lower):
-                            action = "WOL_BOTH"
-                        elif "mac" in user_text_lower:
-                            action = "WOL_MAC"
-                        else:
-                            action = "WOL_WINDOWS"
+                if pin_valido and esta_bloqueado:
+                    agent_queue.desbloquear()
+                    logger.info("[SEGURIDAD] Autorización concedida vía PIN maestro 1012.")
+
+                if intento_apagar or action.startswith("SHUTDOWN"):
+                    if es_ambas:
+                        action = "SHUTDOWN_BOTH"
+                        if not any(k in reply.lower() for k in ["ambas", "computadoras", "pcs", "equipos"]):
+                            reply = "Apagando ambas computadoras de inmediato, Jhulian."
+                    elif "mac" in user_text_lower or action == "SHUTDOWN_MAC":
+                        action = "SHUTDOWN_MAC"
+                        if "mac" not in reply.lower():
+                            reply = "Apagando la Mac de inmediato, Jhulian."
+                    else:
+                        action = "SHUTDOWN_WINDOWS"
+                        if "windows" not in reply.lower() and "pc principal" not in reply.lower():
+                            reply = "Apagando la PC principal de inmediato, Jhulian."
+
+                elif intento_prender or action.startswith("WOL"):
+                    if es_ambas:
+                        action = "WOL_BOTH"
+                        if not any(k in reply.lower() for k in ["ambas", "computadoras", "pcs", "equipos"]):
+                            reply = "Encendiendo ambas computadoras, Jhulian."
+                    elif "mac" in user_text_lower or action == "WOL_MAC":
+                        action = "WOL_MAC"
+                        if "mac" not in reply.lower():
+                            reply = "Encendiendo la Mac, Jhulian."
+                    else:
+                        action = "WOL_WINDOWS"
+                        if "windows" not in reply.lower() and "pc principal" not in reply.lower():
+                            reply = "Encendiendo la PC principal, Jhulian."
 
                 if action == "WOL_WINDOWS":
                     payload = DEVICES["WINDOWS"]
@@ -289,15 +320,20 @@ class OpenAIService:
             reply = "Protocolo de seguridad activado. Sistemas bloqueados, se requerirá cámara para el control de hardware."
             payload = {"status": "locked", "require": "camera"}
 
-        # 4. Intentos de desbloqueo verbal (Se deniegan: la única validación es la cámara)
+        # 4. Intentos de desbloqueo verbal (Se deniegan salvo con el PIN maestro 1012 o cámara)
         elif "desbloquear" in user_text_lower or "desbloquea" in user_text_lower or "código" in user_text_lower or "codigo" in user_text_lower or action == "SECURITY_UNLOCK":
-            if esta_bloqueado:
+            if check_pin_authorization(user_text):
+                agent_queue.desbloquear()
+                action = "SECURITY_UNLOCK"
+                reply = "Código PIN maestro verificado. Protocolo de seguridad levantado, Jhulian."
+                payload = {"status": "unlocked", "method": "pin"}
+            elif esta_bloqueado:
                 action = "SECURITY_DENIED"
-                reply = "Acceso denegado. La única validación autorizada es mediante la cámara. Por favor acércate a ella, Jhulian."
+                reply = "Acceso denegado. La única validación autorizada es mediante la cámara o tu código PIN de seguridad, Jhulian."
                 payload = {"status": "denied", "reason": "camera_verification_required", "require": "camera"}
             else:
                 action = "NONE"
-                reply = "El sistema ya se encuentra validado y operativo por cámara, Jhulian."
+                reply = "El sistema ya se encuentra validado y operativo, Jhulian."
                 payload = {"status": "already_unlocked"}
 
         return reply, action, payload
@@ -310,20 +346,28 @@ class OpenAIService:
         alucinaciones_silencio = {
             "", "you", "subtítulos por la comunidad de amara.org",
             "suscríbete al canal", "suscribete al canal", "...", "suscríbete",
-            "subtítulos", "subtitulos"
+            "subtítulos", "subtitulos", "gracias por ver", "thank you"
         }
         if not transcript_clean or transcript_clean in alucinaciones_silencio or len(transcript_clean) < 2:
-            logger.info(f"[JARVIS BRAIN] Audio vacío o ininteligible: '{transcript}'")
-            reply = "No entendí tu comando."
+            logger.info(f"[JARVIS BRAIN] Silencio o audio vacío detectado: '{transcript}'")
+            reply = ""
             action = "NONE"
-            payload = {"status": "unrecognized"}
-            return "Vacío", reply, action, payload
+            payload = {"status": "silence"}
+            return "Silencio", reply, action, payload
 
         # Respuestas de cortesía directa si dice gracias
         if transcript_clean in ["gracias", "muchas gracias", "gracias jarvis"]:
             reply = "Con gusto, Jhulian."
             action = "NONE"
             payload = {"status": "courtesy"}
+            return transcript, reply, action, payload
+
+        # Saludo directo / llamada por nombre (evita latencia y llamadas innecesarias a GPT)
+        if transcript_clean in ["jarvis", "oye jarvis", "hola jarvis", "hola", "dime jarvis", "estás ahí", "estas ahi"]:
+            reply = "Dime, Jhulian, te escucho."
+            action = "NONE"
+            payload = {"status": "listening"}
+            memory_service.save_turn(user_text=transcript, assistant_text=reply)
             return transcript, reply, action, payload
 
         reply, action, payload = self.generate_response_and_action(transcript)
