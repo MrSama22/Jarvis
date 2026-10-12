@@ -10,6 +10,7 @@ Si ambas están encendidas, ambas actuarán coordinadas.
 import os
 import sys
 import time
+import socket
 import subprocess
 import requests
 from dotenv import load_dotenv
@@ -20,6 +21,21 @@ load_dotenv()
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 AGENT_ID = "mac" if IS_MAC else "windows"
+
+# Candado de instancia única para evitar múltiples procesos concurrentes
+_INSTANCE_LOCK_SOCKET = None
+
+def asegurar_instancia_unica():
+    """Garantiza que solo exista una instancia activa de jarvis_agent por equipo."""
+    global _INSTANCE_LOCK_SOCKET
+    _INSTANCE_LOCK_SOCKET = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # Enlace exclusivo en localhost (puerto 47822)
+        _INSTANCE_LOCK_SOCKET.bind(("127.0.0.1", 47822))
+    except (socket.error, OSError):
+        print(f"[!] Ya existe una instancia activa de JARVIS Agent ({AGENT_ID.upper()}) en este equipo. Proceso duplicado finalizado.")
+        sys.exit(0)
+
 
 # Configuración del Backend en la Nube
 SERVER_URL = os.getenv("RENDER_URL", "https://jarvis-fbff.onrender.com")
@@ -110,6 +126,7 @@ def procesar_comando(cmd: dict):
         apagar_sistema(target)
 
 def iniciar_agente():
+    asegurar_instancia_unica()
     poll_url = f"{SERVER_URL}/agent/poll?agent_id={AGENT_ID}"
     headers = {"X-API-Key": API_KEY}
 
