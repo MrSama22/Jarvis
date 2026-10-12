@@ -64,37 +64,37 @@ Dispositivos:
 - Mac PC (macOS): MAC FC:45:96:79:EE:7D
 
 Protocolo de Seguridad:
-- La ÚNICA validación autorizada para el control de hardware es mediante la cámara (reconocimiento facial). No existen códigos, contraseñas ni autorizaciones por voz.
-- Las acciones de hardware (apagar o encender las PC) requieren obligatoriamente que el sistema haya sido validado previamente por la cámara.
+- La ÚNICA validación autorizada para el control de hardware (apagar o encender computadoras) es mediante la cámara (reconocimiento facial).
 - Si el usuario intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO, responde con action "SECURITY_DENIED" diciendo exactamente: "Acceso denegado. Por favor, acércate a la cámara para verificar tu identidad."
-- Si el usuario pide desbloquear por voz o menciona códigos o contraseñas, responde con action "SECURITY_DENIED" indicando que la única validación posible es a través de la cámara.
-- Si el usuario pide "bloquear", "bloquea el sistema", "bloquea las pc" o "bloqueo de seguridad", confirma el bloqueo con action "SECURITY_LOCK" indicando que se requerirá la cámara para próximos accesos.
+- Si el usuario pide desbloquear por voz o menciona contraseñas, responde con action "SECURITY_DENIED" indicando que la única validación es por cámara.
+- Si el usuario pide "bloquear", "bloquea el sistema", "bloquea las pc" o "bloqueo de seguridad", confirma el bloqueo con action "SECURITY_LOCK".
+- La música NUNCA requiere seguridad de cámara: pausar, reproducir o reanudar música SIEMPRE está permitido sin bloqueos.
 
-Reglas de respuesta:
-1. Responde a CUALQUIER pregunta que te haga Jhulian: preguntas básicas, la hora, fecha, cálculos matemáticos, conceptos, datos curiosos, ciencia, dudas cotidianas o conversación casual.
-2. Si el mensaje es ininteligible, puro ruido o no logras entenderlo con claridad, responde exactamente: "No entendí tu comando." con action: "NONE".
-3. Responde siempre de forma concisa, inteligente, natural, fluida y directa (máximo 1 a 2 oraciones, ideal para voz).
-4. No uses asteriscos, negritas, listas ni símbolos de Markdown.
-5. SIEMPRE debes retornar un JSON válido con esta estructura:
+Reglas de respuesta y flexibilidad acústica:
+1. Sé inteligente, flexible y MUY TOLERANTE a imperfecciones de transcripción, ruido de fondo, palabras cortadas o errores del micrófono del teléfono celular (por ejemplo si la transcripción dice "pausala", "pasa la musica", "pausa", "dale play", "despausa", "apagar compu", "apaga pc", "pon musica", "continua", etc.). Deduce la intención real de Jhulian a partir del contexto en vez de descartarla.
+2. Únicamente debes responder "No entendí tu comando." (con action: "NONE") si el texto es literalmente vacío, letras aleatorias sin significado o ruido completamente irreconocible.
+3. Responde a CUALQUIER pregunta que te haga Jhulian: preguntas básicas, la hora, fecha, cálculos matemáticos, conceptos, ciencia o conversación casual con action: "NONE".
+4. Responde siempre de forma concisa, inteligente, natural, fluida y directa (máximo 1 a 2 oraciones, ideal para voz).
+5. No uses asteriscos, negritas, listas ni símbolos de Markdown.
+6. SIEMPRE debes retornar un JSON válido con esta estructura:
 {
   "action": "ACCION_DETECTADA",
   "reply": "Tu respuesta hablada para Jhulian"
 }
 
 Acciones posibles para el campo "action":
+- "SPOTIFY_PAUSE": Si Jhulian pide pausar música, parar audio, silencio, mute, pausala, apaga la música, para la música.
+- "SPOTIFY_PLAY": Si Jhulian pide reanudar música, reproducir, dale play, continuar, despausar, pon música.
+- "CANCEL": Si Jhulian dice "cancela", "cancelar", "cancel", "olvídalo", "abortar". Responde "Comando cancelado, Jhulian."
 - "WOL_WINDOWS": Encender la PC principal (Windows).
 - "WOL_MAC": Encender la Mac.
-- "WOL_BOTH": Encender ambas computadoras / las dos.
+- "WOL_BOTH": Encender ambas computadoras.
 - "SHUTDOWN_WINDOWS": Apagar la PC principal (Windows).
 - "SHUTDOWN_MAC": Apagar la Mac.
-- "SHUTDOWN_BOTH": Apagar ambas computadoras / todo el laboratorio.
-- "SPOTIFY_PAUSE": Pausar música o bajar volumen.
-- "SPOTIFY_PLAY": Reanudar música o restaurar volumen.
-- "CANCEL": Si Jhulian dice "cancela", "cancelar", "cancel", "olvídalo", "cancela la llamada", "abortar" o "no hagas nada". Responde brevemente con "Comando cancelado, Jhulian." o similar.
+- "SHUTDOWN_BOTH": Apagar ambas computadoras.
 - "SECURITY_LOCK": Activar protocolo de seguridad / bloquear hardware.
-- "SECURITY_UNLOCK": Desbloquear seguridad con verificación de cámara o código 1012.
-- "SECURITY_DENIED": Si Jhulian intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO. Responde pidiendo acercarse a la cámara.
-- "NONE": Para CUALQUIER pregunta básica, informativa, cálculo, fecha/hora, o conversación general sin orden de encendido/apagado/música.
+- "SECURITY_DENIED": Si Jhulian intenta apagar o encender computadoras y el sistema se encuentra BLOQUEADO.
+- "NONE": Para cualquier otra consulta general, informativa o saludo.
 """
 
 class OpenAIService:
@@ -113,15 +113,24 @@ class OpenAIService:
             logger.warning("OPENAI_API_KEY no configurada.")
 
     def transcribe_audio(self, audio_path: Path) -> str:
-        """Transcribe el audio usando Whisper-1."""
+        """Transcribe el audio usando Whisper-1 con prompt contextual para máxima tolerancia a ruido y micrófono de celular."""
         if not self.client:
             raise ValueError("OPENAI_API_KEY no configurada en .env.")
+
+        prompt_guia = (
+            "Comandos de voz del usuario Jhulian para su asistente JARVIS: "
+            "Jarvis, pausa la música, pausar, pausala, dale play, reanudar música, reproducir, pon música, para la música, despausa, "
+            "apagar PC Windows, apagar Mac, apagar ambas computadoras, prender PC, prender Mac, "
+            "bloquear seguridad, desbloquear, verificar cámara, cancelar llamada, qué hora es, cómo estás."
+        )
 
         with open(audio_path, "rb") as audio_file:
             transcript_response = self.client.audio.transcriptions.create(
                 model=OPENAI_TRANSCRIBE_MODEL,
                 file=audio_file,
-                language="es"
+                language="es",
+                prompt=prompt_guia,
+                temperature=0.2
             )
         return getattr(transcript_response, "text", "").strip()
 
@@ -182,12 +191,57 @@ class OpenAIService:
 
         payload = {}
         user_text_lower = user_text.lower()
+
+        # 1. Detección de música y reproducción (prioritaria: NUNCA requiere validación de cámara ni apaga hardware)
+        palabras_pausa = [
+            "pausa", "pausar", "pausala", "páusala", "deten", "detén", "para la musica", "para la música",
+            "para musica", "para el audio", "para la canción", "para la cancion", "silencio",
+            "mute", "mutear", "callate", "cállate", "apaga la musica", "apaga la música",
+            "apaga el audio", "quita la musica", "quita la música", "quitar musica", "baja la musica"
+        ]
+        palabras_play = [
+            "reanuda", "reanudar", "reanudala", "reproduce", "reproducir", "reprodúcela",
+            "continua", "continúa", "dale play", "play", "despausa", "despausar",
+            "pon musica", "pon la musica", "pon música", "pon la música",
+            "sigue con la musica", "sigue la musica"
+        ]
+        palabras_cancel = [
+            "cancela", "cancelar", "cancel", "olvidalo", "olvídalo", "abortar", "no hagas nada"
+        ]
+
+        es_play_musica = (action == "SPOTIFY_PLAY") or any(k in user_text_lower for k in palabras_play)
+        es_pausa_musica = ("despaus" not in user_text_lower) and ((action == "SPOTIFY_PAUSE") or any(k in user_text_lower for k in palabras_pausa))
+        es_cancel = (action == "CANCEL") or any(k in user_text_lower for k in palabras_cancel)
+
+        if es_cancel:
+            action = "CANCEL"
+            agent_queue.add_command("SPOTIFY_PLAY", target="both")
+            reply = "Comando cancelado, Jhulian."
+            payload = {"status": "cancelled"}
+            return reply, action, payload
+
+        elif es_play_musica:
+            action = "SPOTIFY_PLAY"
+            agent_queue.add_command("SPOTIFY_PLAY", target="both")
+            if "reanud" not in reply.lower() and "músic" not in reply.lower() and "play" not in reply.lower():
+                reply = "Reanudando música, Jhulian."
+            payload = {"status": "resumed"}
+            return reply, action, payload
+
+        elif es_pausa_musica:
+            action = "SPOTIFY_PAUSE"
+            agent_queue.add_command("SPOTIFY_PAUSE", target="both")
+            if "paus" not in reply.lower() and "músic" not in reply.lower():
+                reply = "Música pausada, Jhulian."
+            payload = {"status": "paused"}
+            return reply, action, payload
+
+        # 2. Control de hardware (Apagar / Prender computadoras - requiere cámara si está bloqueado)
         is_lock_command = ("desbloque" not in user_text_lower) and any(k in user_text_lower for k in ["bloquear", "bloquea", "bloqueo", "bloqueo de seguridad", "activar seguridad", "activa seguridad", "cerrar sesión"])
-        intento_apagar = any(k in user_text_lower for k in ["apaga", "apagar", "apague"])
-        intento_prender = any(k in user_text_lower for k in ["prende", "prender", "prenda", "enciende", "encender", "encienda", "despierta"])
+        intento_apagar = any(k in user_text_lower for k in ["apaga", "apagar", "apague", "apágala", "apágalo"])
+        intento_prender = any(k in user_text_lower for k in ["prende", "prender", "prenda", "enciende", "encender", "encienda", "despierta", "préndela"])
         intento_hardware = intento_apagar or intento_prender or (action in CRITICAL_HARDWARE_ACTIONS)
 
-        # 1. Acciones de hardware (Apagar o Prender computadoras)
         if intento_hardware or (action in CRITICAL_HARDWARE_ACTIONS):
             if esta_bloqueado:
                 action = "SECURITY_DENIED"
@@ -227,14 +281,14 @@ class OpenAIService:
                     agent_queue.add_command("SHUTDOWN", target="both")
                     payload = {"target": "both"}
 
-        # 2. Comando explícito de bloqueo
+        # 3. Comando explícito de bloqueo
         elif action == "SECURITY_LOCK" or is_lock_command:
             agent_queue.bloquear()
             action = "SECURITY_LOCK"
             reply = "Protocolo de seguridad activado. Sistemas bloqueados, se requerirá cámara para el control de hardware."
             payload = {"status": "locked", "require": "camera"}
 
-        # 3. Intentos de desbloqueo verbal (Se deniegan: la única validación es la cámara)
+        # 4. Intentos de desbloqueo verbal (Se deniegan: la única validación es la cámara)
         elif "desbloquear" in user_text_lower or "desbloquea" in user_text_lower or "código" in user_text_lower or "codigo" in user_text_lower or action == "SECURITY_UNLOCK":
             if esta_bloqueado:
                 action = "SECURITY_DENIED"
@@ -245,41 +299,31 @@ class OpenAIService:
                 reply = "El sistema ya se encuentra validado y operativo por cámara, Jhulian."
                 payload = {"status": "already_unlocked"}
 
-        # 5. Control de música y cancelación (no requieren PIN de hardware)
-        elif action == "SPOTIFY_PAUSE" or (any(k in user_text_lower for k in ["pausa", "pausar", "deten la musica", "para la musica"]) and "musica" in user_text_lower):
-            action = "SPOTIFY_PAUSE"
-            agent_queue.add_command("SPOTIFY_PAUSE", target="both")
-            payload = {"status": "paused"}
-
-        elif action == "SPOTIFY_PLAY" or (any(k in user_text_lower for k in ["reanuda", "reanudar", "reproduce", "continua la musica", "pon musica"]) and "musica" in user_text_lower):
-            action = "SPOTIFY_PLAY"
-            agent_queue.add_command("SPOTIFY_PLAY", target="both")
-            payload = {"status": "resumed"}
-
-        elif action == "CANCEL" or any(k in user_text_lower for k in ["cancela", "cancelar", "cancel", "olvidalo", "olvídalo", "abortar"]):
-            action = "CANCEL"
-            # Reanuda la música de inmediato y no ejecuta ninguna orden de hardware
-            agent_queue.add_command("SPOTIFY_PLAY", target="both")
-            payload = {"status": "cancelled"}
-
         return reply, action, payload
 
     def process_voice_message(self, audio_path: Path) -> Tuple[str, str, str, Dict[str, Any]]:
         transcript = self.transcribe_audio(audio_path)
         transcript_clean = transcript.strip().strip(".?!¿¡ ").lower()
 
-        # Alucinaciones comunes de Whisper cuando hay silencio o ruido de fondo
+        # Alucinaciones comunes de Whisper cuando hay silencio o subtítulos generados
         alucinaciones_silencio = {
-            "", "silencio", "you", "gracias",
-            "subtítulos por la comunidad de amara.org",
-            "suscríbete al canal", "..."
+            "", "you", "subtítulos por la comunidad de amara.org",
+            "suscríbete al canal", "suscribete al canal", "...", "suscríbete",
+            "subtítulos", "subtitulos"
         }
-        if not transcript_clean or transcript_clean in alucinaciones_silencio:
+        if not transcript_clean or transcript_clean in alucinaciones_silencio or len(transcript_clean) < 2:
             logger.info(f"[JARVIS BRAIN] Audio vacío o ininteligible: '{transcript}'")
             reply = "No entendí tu comando."
             action = "NONE"
             payload = {"status": "unrecognized"}
             return "Vacío", reply, action, payload
+
+        # Respuestas de cortesía directa si dice gracias
+        if transcript_clean in ["gracias", "muchas gracias", "gracias jarvis"]:
+            reply = "Con gusto, Jhulian."
+            action = "NONE"
+            payload = {"status": "courtesy"}
+            return transcript, reply, action, payload
 
         reply, action, payload = self.generate_response_and_action(transcript)
         memory_service.save_turn(user_text=transcript, assistant_text=reply)
